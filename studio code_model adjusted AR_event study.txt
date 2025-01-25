@@ -1,0 +1,502 @@
+/* ***************************************************************************** */
+/* ********* W R D S   R E S E A R C H   A P P L I C A T I O N S *************** */
+/* ***************************************************************************** */
+/* Program : EVTSTUDY.SAS                                                        */
+/* Summary : This code performs an event study to calculate Cumulative Abnormal  */
+/*           Returns (CARs) and Buy-Hold Abnormal Returns (BHARs) using various  */
+/*           risk models (Market-Adjusted, Market Model, Fama-French, and Carhart*/
+/*           models). It also computes t-statistics for assessing the statistical*/
+/*           significance of abnormal returns. The code allows users to specify  */
+/*           the length of the estimation period, event window, and gap between  */
+/*           the estimation and event windows.                                   */
+/*                                                                               */
+/* Date    : Sep 2011                                                            */
+/* Author  : Denys Glushkov, WRDS                                                */
+/* ****************************************************************************  */
+
+/* ***************************************************************************** */
+/* ************************** VARIABLE OVERVIEW ******************************** */
+/* ***************************************************************************** */
+
+/* Table 1: Known Variables (Directly from Databases) */
+/* | Variable Name | Description                                      | Database          | */
+/* |---------------|--------------------------------------------------|-------------------| */
+/* | @@VARIABLE: permno@@permno            | CRSP Security Identifier               | crsp.dsf          | */
+/* | @@VARIABLE: date@@date                | Trading Date                           | crsp.dsf          | */
+/* | @@VARIABLE: ret@@ret                  | Daily Stock Return                     | crsp.dsf          | */
+/* | @@VARIABLE: dlret@@dlret              | Delisting Return                       | crsp.dsedelist    | */
+/* | @@VARIABLE: mktrf@@mktrf              | Market Return minus Risk-Free Rate     | ff.factors_daily  | */
+/* | @@VARIABLE: smb@@smb                  | Small Minus Big Factor                | ff.factors_daily  | */
+/* | @@VARIABLE: hml@@hml                  | High Minus Low Factor                 | ff.factors_daily  | */
+/* | @@VARIABLE: umd@@umd                  | Momentum Factor                       | ff.factors_daily  | */
+/* | @@VARIABLE: rf@@rf                    | Risk-Free Rate                        | ff.factors_daily  | */
+
+/* Table 2: Calculated Variables (Derived from Known Variables) */
+/* | Variable Name | Description                                      | Formula                          | */
+/* |---------------|--------------------------------------------------|----------------------------------| */
+/* | @@VARIABLE: exret@@exret              | Market-Adjusted Return                | exret = (1 + ret) * (1 + dlret) - 1 - mkt | */
+/* | @@VARIABLE: abret0@@abret0            | Market-Adjusted Abnormal Return       | abret0 = exret                     | */
+/* | @@VARIABLE: abret1@@abret1            | Market Model Abnormal Return          | abret1 = ret - (alpha1 + beta1 * mktrf) | */
+/* | @@VARIABLE: abret2@@abret2            | Fama-French Model Abnormal Return     | abret2 = ret - (alpha2 + beta2 * mktrf + smb2 * smb + hml2 * hml) | */
+/* | @@VARIABLE: abret3@@abret3            | Carhart Model Abnormal Return         | abret3 = ret - (alpha3 + beta3 * mktrf + smb3 * smb + hml3 * hml + umd3 * umd) | */
+/* | @@VARIABLE: car0@@car0                | Cumulative Abnormal Return (Market-Adjusted) | car0 = sum(abret0)              | */
+/* | @@VARIABLE: car1@@car1                | Cumulative Abnormal Return (Market Model) | car1 = sum(abret1)              | */
+/* | @@VARIABLE: car2@@car2                | Cumulative Abnormal Return (Fama-French) | car2 = sum(abret2)              | */
+/* | @@VARIABLE: car3@@car3                | Cumulative Abnormal Return (Carhart) | car3 = sum(abret3)              | */
+/* | @@VARIABLE: bhar0@@bhar0              | Buy-Hold Abnormal Return (Market-Adjusted) | bhar0 = cret - cmkt           | */
+/* | @@VARIABLE: bhar1@@bhar1              | Buy-Hold Abnormal Return (Market Model) | bhar1 = cret - cexpret1        | */
+/* | @@VARIABLE: bhar2@@bhar2              | Buy-Hold Abnormal Return (Fama-French) | bhar2 = cret - cexpret2        | */
+/* | @@VARIABLE: bhar3@@bhar3              | Buy-Hold Abnormal Return (Carhart) | bhar3 = cret - cexpret3        | */
+/* | @@VARIABLE: scar0@@scar0              | Standardized CAR (Market-Adjusted)   | scar0 = car0 / sqrt(var0 * evtwin) | */
+/* | @@VARIABLE: scar1@@scar1              | Standardized CAR (Market Model)      | scar1 = car1 / sqrt(var1 * evtwin) | */
+/* | @@VARIABLE: scar2@@scar2              | Standardized CAR (Fama-French)      | scar2 = car2 / sqrt(var2 * evtwin) | */
+/* | @@VARIABLE: scar3@@scar3              | Standardized CAR (Carhart)          | scar3 = car3 / sqrt(var3 * evtwin) | */
+
+/* Table 3: Time Range for Variables */
+/* | Variable Name | Time Range                                      | */
+/* |---------------|--------------------------------------------------| */
+/* | ret           | Estimation Period and Event Window              | */
+/* | mktrf, smb, hml, umd, rf | Estimation Period and Event Window   | */
+/* | dlret         | Event Window                                    | */
+
+/* ***************************************************************************** */
+/* ************************** CODE IMPLEMENTATION ****************************** */
+/* ***************************************************************************** */
+
+/* STEP 1A: Specify the parameters necessary to run the event study such as    */
+/* the length of estimation period and event window, gap b/w estimation & event  */
+/* window, etc                                                                   */
+%let crsp=crsp; /* CRSP library to be used (CRSPQ - quarterly, CRSP-annual update  */
+%let estper=150; /* Length of the estimation period in trading days over which    */
+                 /* the risk model is estimated                                   */
+    
+%let start=-10; /* Beginning of the event window (wtr to the event date, e.g. -2)   */
+%let end=10;    /* End of the event window (relative to the event date, e.g., +1)  */
+%let gap=15;    /* Length of pre-event window, i.e., number of trading days b/w    */
+                /* the end of estimation period and the start of the event window */
+    
+%let minest=120; /* Minimum of non-missing returns required for estimation        */
+%let evtwin=%eval(&end-&start+1);       /* Length of event window in trading days */
+    
+/* STEP 1B: As an example, create the input table containing Permno-event dates  */
+/* Example corresponding to the stock additions to and deletions from S&P 500 index      */
+/* proc sql;                                                                               */
+/* create table input */
+/* as select distinct permno, start as edate format date9. */
+/* from &crsp..dsp500list where not missing(start); 
+/* quit; */
+%let in_table=vars.event;  /* Specify the event table */
+%let in_edate=video_dt;  /* Specify the event date */
+data input;
+set &in_table.;
+edate=&video_dt;
+format edate date9.;
+keep permno edate;
+run;   
+
+@@BEGIN VARIABLE: permno@@
+@@BEGIN VARIABLE: edate@@
+@@END VARIABLE: permno@@
+@@END VARIABLE: edate@@
+
+/* STEP 2. Creating Trading Calendar that accounts for the presence of  */
+/* weekends, holidays and other non-trading days in the estimation      */
+/* and event windows                                                    */
+data caldates;
+ merge &crsp..dsi(keep=date rename=(date=estper_beg))
+ &crsp..dsi(keep=date firstobs=&estper rename=(date=estper_end))
+ &crsp..dsi(keep=date firstobs=%eval(&estper+&gap+1) rename=(date=evtwin_beg))
+ &crsp..dsi(keep=date firstobs=%eval(&estper+&gap-&start+1) rename=(date=evtdate))
+ &crsp..dsi(keep=date firstobs=%eval(&estper+&gap+&evtwin) rename=(date=evtwin_end));
+  format estper_beg estper_end evtwin_beg evtdate evtwin_end date9.;
+  label estper_beg='Start of the Estimation Window'
+      estper_end='End of the Estimation Window'
+      evtwin_beg='Start of the Event Window'
+      evtwin_end='End of the Event Window'
+      evtdate='Event Date';
+  index+1;
+  if nmiss(estper_beg,estper_end,evtwin_beg,evtwin_end,evtdate)=0;
+run;
+    
+@@BEGIN VARIABLE: estper_beg@@
+@@BEGIN VARIABLE: estper_end@@
+@@BEGIN VARIABLE: evtwin_beg@@
+@@BEGIN VARIABLE: evtdate@@
+@@BEGIN VARIABLE: evtwin_end@@
+@@END VARIABLE: estper_beg@@
+@@END VARIABLE: estper_end@@
+@@END VARIABLE: evtwin_beg@@
+@@END VARIABLE: evtdate@@
+@@END VARIABLE: evtwin_end@@
+
+/* STEP 3: If event date is a non-trading day, select the closest trading day that */
+/* follows the event day                                                         */
+proc sql; create table temp
+ as select a.permno, b.*
+  from input a left join caldates b
+  on b.evtdate-a.edate>=0
+  group by a.edate
+  having (b.evtdate-a.edate)=min(b.evtdate-a.edate);
+    
+ /* Returns for sample securities around the event dates */
+ create table evtrets_temp
+ as select a.permno, a.date format date9., a.ret as ret1,
+           b.evtdate, b.estper_beg, b.estper_end,
+           b.evtwin_beg, b.evtwin_end
+ from &crsp..dsf a, temp b
+ where a.permno=b.permno and b.estper_beg<=a.date<=b.evtwin_end;
+    
+ @@BEGIN VARIABLE: ret1@@
+ @@END VARIABLE: ret1@@
+
+ /* Merge in the risk factors                                           */
+ /* User can create her own risk factors and use it instead of FF+M ones */
+ create view evtrets1
+   as select a.*, (b.mktrf+b.rf) as mkt, b.mktrf, b.rf,b.smb, b.hml, b.umd
+   from evtrets_temp a left join
+        ff.factors_daily (keep=date mktrf smb hml umd rf) b
+   on a.date=b.date;
+    
+ @@BEGIN VARIABLE: mktrf@@
+ @@BEGIN VARIABLE: smb@@
+ @@BEGIN VARIABLE: hml@@
+ @@BEGIN VARIABLE: umd@@
+ @@BEGIN VARIABLE: rf@@
+ @@END VARIABLE: mktrf@@
+ @@END VARIABLE: smb@@
+ @@END VARIABLE: hml@@
+ @@END VARIABLE: umd@@
+ @@END VARIABLE: rf@@
+
+ /* Bring in delisting returns */
+ create table evtrets (drop=ret1 where=(not missing(mkt)))
+   as select a.*,
+   (1+a.ret1)*sum(1,b.dlret)-1-a.mkt as exret label='Market-adjusted total ret',
+   (1+a.ret1)*sum(1,b.dlret)-1 as ret "Ret adjusted for delisting"
+   from evtrets1 a left join &crsp..dsedelist (where=(missing(dlret)=0)) b
+   on a.permno=b.permno and a.date=b.dlstdt
+ order by a.permno,a.evtdate,a.date;
+quit;
+    
+ @@BEGIN VARIABLE: exret@@
+ @@BEGIN VARIABLE: ret@@
+ @@BEGIN VARIABLE: dlret@@
+ @@END VARIABLE: exret@@
+ @@END VARIABLE: ret@@
+ @@END VARIABLE: dlret@@
+
+/* STEP 4. Estimating Factor Exposures over the estimation period */
+proc printto log=junk; run;
+ 
+proc reg data=evtrets edf outest=params  noprint;
+   where estper_beg<=date<=estper_end;
+   by permno evtdate;
+   eq0: model exret=;
+   eq1: model ret=mktrf;
+   eq2: model ret=mktrf smb hml;
+   eq3: model ret=mktrf smb hml umd;
+run;
+proc printto;run;
+ 
+    
+/* STEP 5. Calculating Abnormal Returns for all models */
+/* for each trading day in the event window            */
+data abrets1/view=abrets1; merge
+  evtrets(where=(evtwin_beg<=date<=evtwin_end) in=a)
+  params (where=(_model_='eq0')
+     keep=permno evtdate _model_ _rmse_ _p_ _edf_
+     rename=(_rmse_=std0 _p_=p0 _edf_=edf0))
+  params (where=(_model_='eq1')
+     keep=permno evtdate _model_ _rmse_ intercept mktrf
+     rename=(_rmse_=std1 intercept=alpha1 mktrf=beta1))
+  params (where=(_model_='eq2')
+     keep=permno evtdate _model_ _rmse_ intercept mktrf smb hml
+     rename=(_rmse_=std2 intercept=alpha2 mktrf=beta2 smb=sminb2 hml=hminl2))
+  params (where=(_model_='eq3')
+     keep=permno evtdate _model_ _rmse_ intercept mktrf smb hml umd
+     rename=(_rmse_=std3 intercept=alpha3 mktrf=beta3 smb=sminb3 hml=hminl3 umd=umind3));
+  by permno evtdate; 
+  retain missret;
+  if first.permno then missret=missing(ret);
+  if missing(ret) then missret+1; /* Count number of missing returns */
+  var0=std0**2; var1=std1**2;var2=std2**2;var3=std3**2;
+  abret0=exret;
+  expret1=alpha1+beta1*mktrf; abret1=ret-expret1;
+  expret2=alpha2+beta2*mktrf+sminb2*smb+hminl2*hml; abret2=ret-expret2;
+  expret3=alpha3+beta3*mktrf+sminb3*smb+hminl3*hml+umind3*umd; abret3=ret-expret3;
+  nobs=p0+edf0;  /* Number of observations used in estimation */
+ drop p0 edf0 estper_beg estper_end std0 std1 std2 std3 _model_ exret;
+ if a and nobs>&minest;
+run;
+  
+ @@BEGIN VARIABLE: abret0@@
+ @@BEGIN VARIABLE: abret1@@
+ @@BEGIN VARIABLE: abret2@@
+ @@BEGIN VARIABLE: abret3@@
+ @@END VARIABLE: abret0@@
+ @@END VARIABLE: abret1@@
+ @@END VARIABLE: abret2@@
+ @@END VARIABLE: abret3@@
+
+/* Transform dates to event time using CRSP Trading Calendar       */
+/* Using the latter takes into account non-consecutive date records */
+proc sql; create table abrets
+  as select a.*, (b.index-c.index) as evttime
+  from abrets1 a left join caldates b
+   on a.date=b.evtdate
+  left join caldates c
+   on a.evtdate=c.evtdate
+order by permno, evtdate, date;
+quit;
+    
+@@BEGIN VARIABLE: evttime@@
+@@END VARIABLE: evttime@@
+
+/* Calculating Rolling Cumulative Abnormal Returns and various stats */
+/* Transformout= calculates cumulative product of gross returns and  */
+/* subtracts 1 to arrive at the total net cumulative return          */        
+proc expand data=abrets out=car method=none;
+  by permno evtdate; id date;
+  convert ret=cret/transformout=(+1 cuprod -1);
+  convert mkt=cmkt/transformout=(+1 cuprod -1);
+  convert expret1 =cexpret1 /transformout=(+1 cuprod -1);
+  convert expret2 =cexpret2 /transformout=(+1 cuprod -1);
+  convert expret3 =cexpret3 /transformout=(+1 cuprod -1);
+  convert abret0=car0/transformout=(sum);
+  convert abret1=car1/transformout=(sum);
+  convert abret2=car2/transformout=(sum);
+  convert abret3=car3/transformout=(sum);
+run;
+    
+ @@BEGIN VARIABLE: car0@@
+ @@BEGIN VARIABLE: car1@@
+ @@BEGIN VARIABLE: car2@@
+ @@BEGIN VARIABLE: car3@@
+ @@END VARIABLE: car0@@
+ @@END VARIABLE: car1@@
+ @@END VARIABLE: car2@@
+ @@END VARIABLE: car3@@
+
+/* Car_Evtdate Table the cross-sectional output that contains for each      */
+/* "firm-event date":                                                       */
+/*   1) CAR, BHAR, and SCAR (standardized CAR)                              */
+/*   2) Alpha and Beta from the estimation period                           */
+/*   3) Estimation period variance                                          */
+    
+/* Car_Evtwin Table contains Raw, Abnormal, Std. and Buy-and-Hold Abnormal  */
+/* Daily Returns "firm-date" in event time                                  */
+proc printto log=junk;run;
+ 
+data car_evtdate
+        (drop=evttime ret mkt smb hml umd date calpha1 calpha2 calpha3
+              cmrkt csmb chml cumd evtwin_beg evtwin_end abret0 abret1
+              abret2 abret3 sar0 sar1 sar2 sar3 missret cexpret1 cexpret2 cexpret3)
+     car_evtwin
+         (keep=permno evtdate evttime date ret cret abret0 abret1 abret2 abret3
+          sar0 sar1 sar2 sar3 bhar0 bhar1 bhar2 bhar3 car0 car1 car2 car3);
+  set car;
+  by permno evtdate date;
+  /* Standardized CARs and ARs for various models */
+  scar0=car0/(&evtwin*var0)**0.5; scar1=car1/(&evtwin*var1)**0.5;
+  scar2=car2/(&evtwin*var2)**0.5; scar3=car3/(&evtwin*var3)**0.5;
+  sar0=abret0/sqrt(var0);sar1=abret1/sqrt(var1);
+  sar2=abret2/sqrt(var2);sar3=abret3/sqrt(var3);
+  pat_scale=(nobs-2)/(nobs-4); /* Patell Z scaling factor */
+  /* Buy-Hold Abnormal Returns */
+  bhar0=cret-cmkt; bhar1=cret-cexpret1;  
+  bhar2=cret-cexpret2; bhar3=cret-cexpret3;
+  if last.evtdate then do; nrets=&evtwin-missret; output car_evtdate; end;
+  output car_evtwin;
+run;
+proc printto;run;
+    
+ @@BEGIN VARIABLE: scar0@@
+ @@BEGIN VARIABLE: scar1@@
+ @@BEGIN VARIABLE: scar2@@
+ @@BEGIN VARIABLE: scar3@@
+ @@BEGIN VARIABLE: bhar0@@
+ @@BEGIN VARIABLE: bhar1@@
+ @@BEGIN VARIABLE: bhar2@@
+ @@BEGIN VARIABLE: bhar3@@
+ @@END VARIABLE: scar0@@
+ @@END VARIABLE: scar1@@
+ @@END VARIABLE: scar2@@
+ @@END VARIABLE: scar3@@
+ @@END VARIABLE: bhar0@@
+ @@END VARIABLE: bhar1@@
+ @@END VARIABLE: bhar2@@
+ @@END VARIABLE: bhar3@@
+
+/* Put Cross-sectional and aggregate results together for further analysis */
+data allcars; merge
+  car_evtwin
+  (rename=(bhar0=bhar0win bhar1=bhar1win bhar2=bhar2win bhar3=bhar3win
+           car0=car0win car1=car1win car2=car2win car3=car3win cret=cretwin))
+  car_evtdate;
+ by permno evtdate;
+run;
+  
+/* STEP 6: Compute Cumulative Average Abnormal Return (CAR_MEAN) */
+/* and Average Buy-Hold Abnormal Return (BHAR_MEAN)              */
+/* and other stats across all distinct events                    */
+proc means data=allcars noprint;
+  class evttime; id nobs;
+  var ret cret car0 car1 car2 car3 bhar0 bhar1 bhar2 bhar3
+  bhar0win bhar1win bhar2win bhar3win cretwin
+  car0win car1win car2win car3win
+  scar0 scar1 scar2 scar3 abret0 abret1 abret2 abret3
+  sar0 sar1 sar2 sar3 pat_scale;
+  output out=allstats
+  mean= n= t= sum=/autoname;
+run;
+      
+/* Calculate different stats for assessing    */
+/* statistical significance of abnormal returns */
+data MA_Evtdate (keep=evttime car0_n cret_mean car0_mean car0_t scar0_t
+                 bhar0_mean pat_car0 model)
+     MM_Evtdate (keep=evttime car1_n cret_mean car1_mean car1_t scar1_t
+                 bhar1_mean pat_car1 model )
+     FF_Evtdate (keep=evttime car2_n cret_mean car2_mean car2_t scar2_t
+                 bhar2_mean pat_car2 model )
+     FFM_Evtdate (keep=evttime car3_n cret_mean car3_mean car3_t scar3_t
+                 bhar3_mean pat_car3 model )
+     MA_Evtwin  (keep=evttime cretwin_mean abret0_n ret_mean abret0_mean
+                 car0win_mean bhar0win_mean abret0_t sar0_t pat_ar0 )
+     MM_Evtwin  (keep=evttime cretwin_mean abret1_n ret_mean abret1_mean
+                 car1win_mean bhar1win_mean abret1_t sar1_t pat_ar1 )
+     FF_Evtwin  (keep=evttime cretwin_mean abret2_n ret_mean abret2_mean
+                 car2win_mean bhar2win_mean abret2_t sar2_t pat_ar2 )
+     FFM_Evtwin (keep=evttime cretwin_mean abret3_n ret_mean abret3_mean
+                 car3win_mean bhar3win_mean abret3_t sar3_t pat_ar3 );  
+ set allstats;
+ by evttime;
+   if _n_=1 and missing(evttime) then do;
+   abret0_mean=.; abret1_mean=.;
+   abret2_mean=.; abret3_mean=.;
+   cretwin_mean=0; ret_mean=.;
+   bhar1win_mean=0; bhar1win_mean=0;
+   bhar2win_mean=0;bhar3win_mean=0;
+   end;
+   /* Patell Z statistics */
+   pat_car0=scar0_mean/(sqrt(pat_scale_sum)/scar0_n);
+   pat_car1=scar1_mean/(sqrt(pat_scale_sum)/scar1_n);
+   pat_car2=scar2_mean/(sqrt(pat_scale_sum)/scar2_n);
+   pat_car3=scar3_mean/(sqrt(pat_scale_sum)/scar3_n);
+   pat_ar0=sar0_mean/(sqrt(pat_scale_sum)/sar0_n);
+   pat_ar1=sar1_mean/(sqrt(pat_scale_sum)/sar1_n);
+   pat_ar2=sar2_mean/(sqrt(pat_scale_sum)/sar2_n);
+   pat_ar3=sar3_mean/(sqrt(pat_scale_sum)/sar3_n);
+ label
+   pat_ar0=       'Patell Z for AR_MA'  pat_ar1=        'Patell Z for AR_MM'
+   pat_ar2=       'Patell Z for AR_FF'  pat_ar3=        'Patell Z for AR_FFM'
+   abret0_t=      'CS t-stat, AR_MA'    abret1_t=       'CS t-stat, AR_MM'
+   abret2_t=      'CS t-stat, AR_FF'    abret3_t=       'CS t-stat, AR_FFM'
+   sar0_t=        'Std CS test, AR_MA'  sar1_t=         'Std CS test, AR_MM'
+   sar2_t=        'Std CS test, AR_FF'  sar3_t=         'Std CS test, AR_FFM'
+   abret0_mean=   'Mean AR_MA'          abret1_mean=    'Mean AR_MM'
+   abret2_mean=   'Mean AR_FF'          abret3_mean=    'Mean AR_FFM'
+   car0_n=        'Number of events in the portfolio'
+   abret0_n=      'Number of events in the portfolio'
+   evttime=       'Event Time t'
+   cret_mean=     "Mean CTR (&start, &end)"
+   cretwin_mean=  "Mean CTR (&start,t) "
+   car0win_mean=  "Average CAR_MA (&start, t)"
+   car1win_mean=  "Average CAR_MM (&start, t)"
+   car2win_mean=  "Average CAR_FF (&start, t)"
+   car3win_mean=  "Average CAR_FFM (&start, t)"
+   bhar0win_mean= "Mean BHAR_MA (&start, t)"
+   bhar1win_mean=  "Mean BHAR_MM (&start, t)"
+   bhar2win_mean= "Mean BHAR_FF (&start, t)"
+   bhar3win_mean=  "Mean BHAR_FFM (&start, t)"
+ ;
+   format ret_mean cret_mean abret0_mean abret1_mean abret2_mean abret3_mean
+          car0_mean car1_mean car2_mean car3_mean bhar0_mean bhar1_mean
+          bhar2_mean bhar3_mean cretwin_mean
+          bhar0win_mean bhar1win_mean bhar2win_mean bhar3win_mean
+          car0win_mean car1win_mean car2win_mean car3win_mean percent7.4
+          abret0_t abret1_t abret2_t abret3_t sar0_t sar1_t sar2_t sar3_t
+          pat_car0 pat_car1 pat_car2 pat_car3 pat_ar0 pat_ar1 pat_ar2 pat_ar3
+          car0_t car1_t car2_t car3_t scar0_t scar1_t scar2_t scar3_t comma10.2;
+  if evttime=0 then do; model='Market-Adjusted'; output MA_Evtdate;
+                        model='Market Model';    output MM_Evtdate;
+                        model='FF Model';        output FF_Evtdate;
+                        model='Carhart Model';   output FFM_Evtdate;
+                 end;
+  if missing(evttime) then evttime=&start-1;
+  output MA_Evtwin; output MM_Evtwin; output FF_Evtwin; output FFM_Evtwin;
+run;
+    
+@@BEGIN VARIABLE: pat_car0@@
+@@BEGIN VARIABLE: pat_car1@@
+@@BEGIN VARIABLE: pat_car2@@
+@@BEGIN VARIABLE: pat_car3@@
+@@END VARIABLE: pat_car0@@
+@@END VARIABLE: pat_car1@@
+@@END VARIABLE: pat_car2@@
+@@END VARIABLE: pat_car3@@
+
+/* STEP 7. Putting Event Date CARs and BHARS for various risk models together */
+data allevtdate; set
+  MA_Evtdate  (rename=(car0_mean=car_mean bhar0_mean=bhar_mean
+                car0_n=n car0_t=car_t scar0_t=scar_t pat_car0=pat_car))
+  MM_Evtdate  (rename=(car1_mean=car_mean bhar1_mean=bhar_mean
+                car1_n=n car1_t=car_t scar1_t=scar_t pat_car1=pat_car))
+  FF_Evtdate  (rename=(car2_mean=car_mean bhar2_mean=bhar_mean
+                car2_n=n car2_t=car_t scar2_t=scar_t pat_car2=pat_car))
+  FFM_evtdate (rename=(car3_mean=car_mean bhar3_mean=bhar_mean
+                car3_n=n car3_t=car_t scar3_t=scar_t pat_car3=pat_car));
+ length=&evtwin;
+ label pat_car=   'Patell Z'
+       car_mean=  "Mean CAR (&start, &end)" 
+       bhar_mean= "Mean BHAR (&start, &end)"   
+       car_t=     'Cross-sectional t-stat for CAR' 
+       scar_t=    'Standaridized cross-sectional t-stat for CAR'
+       length=    'Length of event window in trading days';
+run;
+    
+/* Cross-sectional output for CARs/BHARs at the firm-event level */
+data car_evtdate;
+  retain permno evtdate alpha1 beta1 cret car0 bhar0 var0 car1 bhar1 var1
+       car2 bhar2 var2 car3 bhar3 var3 nrets nobs;
+  set car_evtdate;
+  label alpha1=  'Alpha (Market Model)' beta1='Beta (Market Model'
+        car0=    'CAR_MA'               car1='CAR_MM'
+        car2=    'CAR_FF'               car3='CAR_FFM'
+        bhar0=   'BHAR_MA'              bhar1='BHAR_MM'
+        bhar2=   'BHAR_FF'              bhar3='BHAR_FFM'
+        var0=    'Estimation period variance (Market-adjusted returns)'
+        var1=    'Estimation period variance (Market Model)'
+        var2=    'Estimation period variance (FF Model)'
+        var3=    'Estimation period variance (Carhart Model)'
+        cret=    'Cumulative Total Return'
+        nrets=   'Number of non-missing returns in event window'
+        nobs=    'Length of the estimation period';
+  keep permno evtdate alpha1 beta1 cret car0 bhar0 var0 car1 bhar1 var1
+       car2 bhar2 var2 car3 bhar3 var3 nrets nobs;
+  format cret alpha1 car0 bhar0 car1 bhar1 car2 bhar2 car3 bhar3 percent7.4
+         beta1 comma10.3;
+run;
+  
+/* As an illustration, plot Carhart CAARs and average BHARs in the event window */
+options nodate orientation=landscape; ods pdf file='Carhart_evtrets.pdf';
+goptions device=pdfc; /* Plot Saved in Home Directory */
+axis1 label=(angle=90 "Cumulative Returns");
+axis2 label=("Event time");
+symbol interpol=join w=3 l=1;
+proc gplot data =FFM_Evtwin;
+ where evttime>=&start;
+ Title "Cumulative Total Returns vs. Carhart CAARs and BHARs around the event date";
+ plot (cretwin_mean car3win_mean bhar3win_mean)*evttime
+       /overlay legend vaxis=axis1 haxis=axis2;
+run;quit; ods pdf close;
+   
+/* House cleaning */
+ proc sql;
+  drop table abrets, allcars, allstats, caldates, car, car_evtwin, evtrets, temp,
+             evtrets_temp,ffm_evtdate, ff_evtdate, ma_evtdate, mm_evtdate, params;
+  drop view  evtrets1, abrets1; quit;
+      
+/* ******************************************************************************** */
+/* *************  Material Copyright Wharton Research Data Services  ************** */
+/* ****************************** All Rights Reserved ***************************** */
+/* ******************************************************************************** */

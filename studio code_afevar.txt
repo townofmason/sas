@@ -1,0 +1,500 @@
+/*
+表格一：已知变量（直接引自数据库）
+| 名字          | 含义                       | 数据库                |
+|---------------|----------------------------|-----------------------|
+| @@VARIABLE: gvkey@@gvkey         | 公司标识符                | comp.fundq, cibeslnk  |
+| @@VARIABLE: fyearq@@fyearq        | 财务年度季度              | comp.fundq            |
+| @@VARIABLE: fqtr@@fqtr          | 财务季度                  | comp.fundq            |
+| @@VARIABLE: conm@@conm          | 公司名称                  | comp.fundq            |
+| @@VARIABLE: datadate@@datadate      | 数据日期                  | comp.fundq            |
+| @@VARIABLE: rdq@@rdq           | 财报发布日期              | comp.fundq            |
+| @@VARIABLE: epsfxq@@epsfxq        | 稀释后每股收益（EPS）     | comp.fundq            |
+| @@VARIABLE: epspxq@@epspxq        | 基本每股收益（EPS）       | comp.fundq            |
+| @@VARIABLE: prccq@@prccq         | 季度股票价格              | comp.fundq            |
+| @@VARIABLE: ajexq@@ajexq         | 调整因子                  | comp.fundq            |
+| @@VARIABLE: spiq@@spiq          | 特殊项目                  | comp.fundq            |
+| @@VARIABLE: cshoq@@cshoq         | 季度流通股数              | comp.fundq            |
+| @@VARIABLE: cshprq@@cshprq        | 优先股数量                | comp.fundq            |
+| @@VARIABLE: cshfdq@@cshfdq        | 完全稀释股数              | comp.fundq            |
+| @@VARIABLE: saleq@@saleq         | 销售额（季度）            | comp.fundq            |
+| @@VARIABLE: atq@@atq           | 季度总资产                | comp.fundq            |
+| @@VARIABLE: fyr@@fyr           | 财务年度结束月份          | comp.fundq            |
+| @@VARIABLE: consol@@consol        | 合并报表代码              | comp.fundq            |
+| @@VARIABLE: indfmt@@indfmt        | 工业格式代码              | comp.fundq            |
+| @@VARIABLE: datafmt@@datafmt       | 数据格式代码              | comp.fundq            |
+| @@VARIABLE: popsrc@@popsrc       | 数据来源代码              | comp.fundq            |
+| @@VARIABLE: datafqtr@@datafqtr      | 财报季度                  | comp.fundq            |
+| @@VARIABLE: ticker@@ticker        | IBES 股票代码             | cibeslnk, ibes.detu_epsus, ibes.actu_epsus, mine.iclink, ibes.statsum_epsus |
+| @@VARIABLE: pends@@pends         | 预测期间结束日期          | ibes.actu_epsus       |
+| @@VARIABLE: anndats@@anndats       | 财报发布日期              | ibes.detu_epsus, ibes.actu_epsus |
+| @@VARIABLE: revdats@@revdats       | 修订日期                  | ibes.detu_epsus       |
+| @@VARIABLE: value@@value         | 预测值                    | ibes.detu_epsus       |
+| @@VARIABLE: usfirm@@usfirm        | 美国公司标识              | ibes.detu_epsus, ibes.actu_epsus |
+| @@VARIABLE: fpedats@@fpedats       | 预测期间结束日期          | ibes.detu_epsus       |
+| @@VARIABLE: estimator@@estimator     | 分析师标识                | ibes.detu_epsus       |
+| @@VARIABLE: analys@@analys        | 分析师代码                | ibes.detu_epsus       |
+| @@VARIABLE: permno@@permno        | CRSP 证券代码             | lnk, mine.iclink      |
+| @@VARIABLE: cfacshr@@cfacshr       | 股份调整因子              | crsp.dsf              |
+| @@VARIABLE: ACTUAL@@ACTUAL        | 实际每股收益              | ibes.statsum_epsus    |
+| @@VARIABLE: ACTDATS_ACT@@ACTDATS_ACT   | 实际发布日期              | ibes.statsum_epsus    |
+| @@VARIABLE: NUMEST@@NUMEST        | 分析师估计个数            | ibes.statsum_epsus    |
+| @@VARIABLE: MEANEST@@MEANEST       | 分析师估计平均值          | ibes.statsum_epsus    |
+| @@VARIABLE: MEDEST@@MEDEST        | 分析师估计中位数          | ibes.statsum_epsus    |
+| @@VARIABLE: stdev@@stdev         | 分析师估计标准差          | ibes.statsum_epsus    |
+| @@VARIABLE: fpi@@fpi           | 预测区间                  | ibes.detu_epsus, ibes.statsum_epsus |
+| @@VARIABLE: measure@@measure      | 计量单位                  | ibes.detu_epsus, ibes.actu_epsus, ibes.statsum_epsus |
+| @@VARIABLE: pdicity@@pdicity      | 季度/年度                 | ibes.actu_epsus       |
+*/
+
+/*
+表格二：计算得到的变量（由已知变量计算得来）
+| 名字                 | 含义                                 | 公式                                                        |
+|----------------------|--------------------------------------|-------------------------------------------------------------|
+| @@VARIABLE: mcap@@mcap                 | 市值                                 | cshoq * prccq                                               |
+| @@VARIABLE: date_fyend@@date_fyend           | 财年结束日期                         | 根据 fyr 和 fyearq 计算                                     |
+| @@VARIABLE: fqenddt@@fqenddt              | 季度财报结束日期                     | 根据 date_fyend 和 fqtr 计算                                |
+| @@VARIABLE: estdats1@@estdats1             | 调整后的预测发布日期                 | 根据 anndats 调整为 CRSP 交易日                             |
+| @@VARIABLE: repdats1@@repdats1             | 调整后的财报发布日期                 | 根据 anndats 调整为 CRSP 交易日                             |
+| @@VARIABLE: est_factor@@est_factor           | 预测日调整因子                       | 从 crsp.dsf 获取                                            |
+| @@VARIABLE: rep_factor@@rep_factor           | 报告日调整因子                       | 从 crsp.dsf 获取                                            |
+| @@VARIABLE: new_value@@new_value            | 调整后的预测值                       | 根据 est_factor 和 rep_factor 调整                          |
+| @@VARIABLE: p_count@@p_count              | 基于 primary 的预测个数              | sum(pdf='P')                                                |
+| @@VARIABLE: d_count@@d_count              | 基于 diluted 的预测个数              | sum(pdf='D')                                                |
+| @@VARIABLE: est_median@@est_median           | 预测中位数                           | 从 ibes1 计算得到                                           |
+| @@VARIABLE: est_mean@@est_mean             | 预测均值                             | 从 ibes1 计算得到                                           |
+| @@VARIABLE: numest@@numest               | 预测个数                             | 从 ibes1 计算得到                                           |
+| @@VARIABLE: dispersion@@dispersion           | 预测标准差                           | 从 ibes1 计算得到                                           |
+| @@VARIABLE: basis@@basis                | 基于 primary/diluted 的类型          | case when p_count>d_count then 'P' when p_count<=d_count then 'D' end |
+| @@VARIABLE: sue_median_w90@@sue_median_w90       | 90天窗口SUE中位数                    | (act - est_median)/prccq                                    |
+| @@VARIABLE: sue_mean_w90@@sue_mean_w90         | 90天窗口SUE均值                      | (act - est_mean)/prccq                                      |
+| @@VARIABLE: disp_w90@@disp_w90             | 90天窗口预测标准差                   | dispersion                                                  |
+| @@VARIABLE: disp_prc_w90@@disp_prc_w90         | 90天窗口预测标准差/股价              | dispersion/prccq                                            |
+| @@VARIABLE: afcnt_w90@@afcnt_w90            | 90天窗口预测个数                     | numest                                                      |
+| @@VARIABLE: sue_median_qtr@@sue_median_qtr       | 季度窗口SUE中位数                    | (act - est_median)/prccq                                    |
+| @@VARIABLE: sue_mean_qtr@@sue_mean_qtr         | 季度窗口SUE均值                      | (act - est_mean)/prccq                                      |
+| @@VARIABLE: disp_qtr@@disp_qtr             | 季度窗口预测标准差                   | dispersion                                                  |
+| @@VARIABLE: disp_prc_qtr@@disp_prc_qtr         | 季度窗口预测标准差/股价              | dispersion/prccq                                            |
+| @@VARIABLE: afcnt_qtr@@afcnt_qtr            | 季度窗口预测个数                     | numest                                                      |
+| @@VARIABLE: sue_median_con@@sue_median_con     | consensus SUE中位数                  | (act - est_median)/(prccq/AJEXQ)                            |
+| @@VARIABLE: sue_mean_con@@sue_mean_con         | consensus SUE均值                    | (act - est_mean)/(prccq/AJEXQ)                              |
+| @@VARIABLE: disp_con@@disp_con             | consensus 预测标准差                 | dispersion                                                  |
+| @@VARIABLE: disp_prc_con@@disp_prc_con         | consensus 预测标准差/股价            | dispersion/(prccq/AJEXQ)                                    |
+| @@VARIABLE: afcnt_con@@afcnt_con            | consensus 预测个数                   | numest                                                      |
+*/
+
+/*
+时间限制变量时间范围表
+| 变量名     | 时间范围       |
+|----------|----------------|
+| datadate | '01JAN2010'd ~ '31DEC2020'd  |
+| fpedats  | '01JAN2010'd ~ '31DEC2020'd  |
+| anndats  | '01JAN2010'd ~ '31DEC2020'd  |
+| repdats  | '01JAN2010'd ~ '31DEC2020'd  |
+*/
+
+libname vars "/home/uiowa/tptashni/vars/outputs"; 
+
+/*********************part one: set the common variables************************************/
+%let begindate='01jan2010'd; 					*start calendar date of fiscal period end;
+%let enddate='31dec2020'd; 					*end calendar date of fiscal period end;
+
+* variables to extract from Compustat;
+@@BEGIN VARIABLE: conm@@
+@@BEGIN VARIABLE: datadate@@
+@@BEGIN VARIABLE: rdq@@
+@@BEGIN VARIABLE: epsfxq@@
+@@BEGIN VARIABLE: epspxq@@
+@@BEGIN VARIABLE: ajexq@@
+@@BEGIN VARIABLE: spiq@@
+@@BEGIN VARIABLE: cshfdq@@
+@@BEGIN VARIABLE: cshprq@@
+@@BEGIN VARIABLE: saleq@@
+@@BEGIN VARIABLE: atq@@
+@@BEGIN VARIABLE: popsrc@@
+%let comp_list= gvkey fyearq fqtr conm datadate rdq epsfxq epspxq prccq ajexq spiq cshoq cshprq cshfdq rdq saleq atq fyr consol indfmt datafmt popsrc datafqtr;
+@@END VARIABLE: popsrc@@
+@@END VARIABLE: conm@@
+@@END VARIABLE: datadate@@
+@@END VARIABLE: rdq@@
+@@END VARIABLE: epsfxq@@
+@@END VARIABLE: epspxq@@
+@@END VARIABLE: ajexq@@
+@@END VARIABLE: spiq@@
+@@END VARIABLE: cshfdq@@
+@@END VARIABLE: cshprq@@
+@@END VARIABLE: saleq@@
+@@END VARIABLE: atq@@
+
+* timing and primary filters for Compustat Xpressfeed;
+@@BEGIN VARIABLE: consol@@
+@@BEGIN VARIABLE: indfmt@@
+@@BEGIN VARIABLE: datafmt@@
+@@BEGIN VARIABLE: datafqtr@@
+%let comp_where=where=(fyr>0 and (saleq>0 or atq>0) and consol='C' and popsrc='D' and indfmt='INDL' and datafmt='STD' and missing(datafqtr)=0);
+@@END VARIABLE: consol@@
+@@END VARIABLE: indfmt@@
+@@END VARIABLE: datafmt@@
+@@END VARIABLE: datafqtr@@
+
+* IBES filters;
+%let ibes_where1=where=(measure='EPS' and fpi in ('6','7') and &begindate<=fpedats<=&enddate);
+
+* filter from LM (2006):
+- earnings announcement date is reported in Compustat
+- the price per share is available from Compustat as of the end of the fiscal quarter and is greater than $1
+- the market (book) value of equity at the fiscal quarter end is available and is larger than $5 mil;
+%let LM_filter=(missing(rdq)=0 and prccq>1 and mcap>5.0);
+
+* define a set of auxiliary macros;
+%include '/wrds/ibes/samples/cibeslink.sas';
+%include '/wrds/ibes/samples/ibes_sample.sas';
+%include '/wrds/comp/samples/sue.sas';
+%include '/wrds/ibes/samples/iclink.sas'; 			*build CRSP-IBES permno-ticker link;
+
+*********************************************************************************;
+* Get a list of IBES tickers you're interested in.				*;
+* Convert that list of IBES tickers into a text file called 'tickers.txt'	*;
+*********************************************************************************;
+options sasautos=('/wrds/wrdsmacros/', SASAUTOS) MAUTOSOURCE;
+%ICLINK (IBESID=IBES.ID,CRSPID=CRSP.STOCKNAMES,OUTSET=ICLINK);
+
+@@BEGIN VARIABLE: ticker@@
+data tickers; set ICLINK;
+	keep ticker;
+run;
+@@END VARIABLE: ticker@@
+
+proc sort data=tickers nodupkey;
+by ticker;
+run;
+
+* CIBESLINK macro will create a linking table CIBESLNK between IBES ticker and Compustat GVKEY
+* based on IBES ticker-CRSP permno (ICLINK) and CCM CRSP permno - Compustat GVKEY (CSTLINK2) link;
+%CIBESLINK (begdt=&begindate, enddt=&enddate);
+
+/****************part two:generate the compustat variables ***********************/
+proc sql;
+    @@BEGIN VARIABLE: gvkey@@
+   create table gvkeys
+   as select a.*
+   from cibeslnk as a, tickers as b
+   where a.ticker=b.ticker; *use CIBESLNK table to link IBES Ticker and GVKEY;
+	@@END VARIABLE: gvkey@@
+
+	  @@BEGIN VARIABLE: cshoq@@
+    @@BEGIN VARIABLE: prccq@@
+   create table comp (drop=consol indfmt datafmt popsrc)
+   as select a.*, cshoq*prccq as mcap
+   from comp.fundq (keep=&comp_list &comp_where) as a,
+   gvkeys as b
+   where a.gvkey=b.gvkey;
+   @@END VARIABLE: cshoq@@
+    @@END VARIABLE: prccq@@
+
+   create table comp
+   as select *
+   from comp a left join
+   (select distinct gvkey,ibtic from comp.security
+   (where=(missing(ibtic)=0))) b
+   on a.gvkey=b.gvkey;
+quit;
+
+* Create calendar date of fiscal period end in Compustat extract;
+data comp; set comp;
+    @@BEGIN VARIABLE: fyr@@
+    @@BEGIN VARIABLE: fyearq@@
+    @@BEGIN VARIABLE: fqtr@@
+   if (1<=fyr<=5) then date_fyend=intnx('month',mdy(fyr,1,fyearq+1),0,'end');
+   else if (6<=fyr<=12) then date_fyend=intnx('month',mdy(fyr,1,fyearq),0,'end');
+    @@BEGIN VARIABLE: date_fyend@@
+   fqenddt=intnx('month',date_fyend,-3*(4-fqtr),'end');
+   format fqenddt date9.;
+   drop date_fyend;
+run;
+  @@END VARIABLE: date_fyend@@
+    @@END VARIABLE: fyr@@
+    @@END VARIABLE: fyearq@@
+    @@END VARIABLE: fqtr@@
+
+* a) Link Gvkey with Lpermno;
+proc sql;
+   create table comp1
+   as select a.*, b.lpermno
+   from comp (where=(&begindate<=fqenddt<=&enddate)) as a left join lnk as b
+   on a.gvkey=b.gvkey and ((b.linkdt<=a.fqenddt <=b.linkenddt) or
+   (b.linkdt<=a.fqenddt and b.linkenddt=.E) or
+   (b.linkdt=.B and a.fqenddt <=b.linkenddt));
+
+* b) Link Gvkey with IBES Ticker;
+create table comp1
+   as select a.*, b.ticker
+   from comp1 as a left join cibeslnk as b
+   on a.gvkey=b.gvkey and ((b.fdate<=a.fqenddt <=b.ldate) or
+   (b.fdate<=a.fqenddt and b.ldate=.E) or (b.fdate=.B and a.fqenddt <=b.ldate));
+quit;
+
+/****************part three:set the macro ibes for w90/w60/w30/qtr *******************************/
+%MACRO afevar (infile=, ibes1_where=, ibes2_where=, ibes_var=, name= );
+proc sql; create table ibes (drop=measure fpi)
+        as select *
+        from ibes.detu_epsus (&ibes1_where keep=&ibes_var) as a,             
+             &infile as b                                              
+        where a.ticker=b.ticker
+        order by a.ticker, fpedats, estimator, analys, anndats, revdats;
+quit;
+		@@BEGIN VARIABLE: fpedats@@
+        @@BEGIN VARIABLE: anndats@@
+        @@BEGIN VARIABLE: revdats@@
+        @@BEGIN VARIABLE: estimator@@
+        @@BEGIN VARIABLE: analys@@
+	    @@BEGIN VARIABLE: value@@
+* Select the last estimate for a firm within broker-analyst group;     
+data ibes; set ibes;
+        by ticker fpedats estimator analys;
+        if last.analys;
+run;
+        @@END VARIABLE: fpedats@@
+        @@END VARIABLE: anndats@@
+        @@END VARIABLE: revdats@@
+        @@END VARIABLE: estimator@@
+        @@END VARIABLE: analys@@
+        @@END VARIABLE: value@@
+
+* How many estimates are reported on primary/diluted basis?;
+proc sql;
+		@@BEGIN VARIABLE: p_count@@
+		@@BEGIN VARIABLE: d_count@@
+        create table ibes 
+                as select a.*, sum(pdf='P') as p_count, sum(pdf='D') as d_count
+                from ibes as a
+                group by ticker, fpedats;
+        @@END VARIABLE: p_count@@
+		@@END VARIABLE: d_count@@
+
+* a. Link unadjusted estimates with unadjusted actuals and CRSP permnos;
+* b. Adjust report and estimate dates to be CRSP trading days;
+	  @@BEGIN VARIABLE: act@@
+	  @@BEGIN VARIABLE: pends@@
+	    @@BEGIN VARIABLE: repdats@@
+        @@BEGIN VARIABLE: permno@@
+        @@BEGIN VARIABLE: measure@@
+         @@BEGIN VARIABLE: fpi@@
+          @@BEGIN VARIABLE: pdicity@@
+        create table ibes1 (&ibes2_where)
+                as select a.*, b.pends,  b.anndats as repdats, b.value as act, c.permno,
+                case when weekday(a.anndats)=1 then intnx('day',a.anndats,-2)                  
+                     when weekday(a.anndats)=7 then intnx('day',a.anndats,-1) else a.anndats   
+                end as estdats1,
+                case when weekday(b.anndats)=1 then intnx('day',b.anndats,1)                  
+                     when weekday(b.anndats)=7 then intnx('day',b.anndats,2) else b.anndats    
+           
+              end as repdats1
+                from ibes as a, ibes.actu_epsus as b, mine.iclink as c
+                where a.ticker=b.ticker and a.fpedats=b.pends and a.usfirm=b.usfirm and b.pdicity='QTR' 
+                          and b.measure='EPS' and a.ticker=c.ticker and c.score in (0,1,2);
+         @@END VARIABLE: pends@@
+        @@END VARIABLE: measure@@
+         @@END VARIABLE: fpi@@
+         @@END VARIABLE: pdicity@@
+      @@END VARIABLE: act@@
+     @@END VARIABLE: repdats@@
+     @@END VARIABLE: permno@@
+
+* Making sure that estimates and actuals are on the same basis;
+                        
+* 1. retrieve CRSP cumulative adjustment factor for IBES report and estimate dates;
+   @@BEGIN VARIABLE: cfacshr@@
+create table adjfactor
+        as select distinct a.*
+        from crsp.dsf (keep=permno date cfacshr) as a, ibes1 as b
+        where a.permno=b.permno and (a.date=b.estdats1 or a.date=b.repdats1);
+@@END VARIABLE: cfacshr@@
+        
+* 2. if adjustment factors are not the same, adjust the estimate to be on the same basis with the actual;
+@@BEGIN VARIABLE: est_factor@@
+@@BEGIN VARIABLE: rep_factor@@
+@@BEGIN VARIABLE: new_value@@
+create table ibes1
+        as select distinct a.*, b.est_factor, c.rep_factor, 
+                case when (b.est_factor ne c.rep_factor) and missing(b.est_factor)=0 and missing(c.rep_factor)=0
+                 then (rep_factor/est_factor)*value else value end as new_value
+        from ibes1 as a, 
+                adjfactor (rename=(cfacshr=est_factor)) as b, 
+                adjfactor (rename=(cfacshr=rep_factor)) as c 
+                where (a.permno=b.permno and a.estdats1=b.date) and
+                          (a.permno=c.permno and a.repdats1=c.date);
+quit;
+@@END VARIABLE: est_factor@@
+@@END VARIABLE: rep_factor@@
+@@END VARIABLE: new_value@@
+
+* Make sure the last observation per analyst is included;
+proc sort data=ibes1; 
+    by ticker fpedats estimator analys anndats revdats;
+run;
+
+data ibes1; set ibes1; by ticker fpedats estimator analys;
+	if last.analys;
+run;
+
+* Compute the median forecast based on estimates in the 90 days prior to the report date;
+proc means data=ibes1 noprint;
+     by ticker fpedats;
+     @@BEGIN VARIABLE: est_median@@
+     @@BEGIN VARIABLE: est_mean@@
+     @@BEGIN VARIABLE: numest@@
+     @@BEGIN VARIABLE: dispersion@@
+     var new_value;                         			* new_value is the estimate appropriately adjusted;
+     output out= out_est (drop=_type_ _freq_)         
+     median=est_median mean=est_mean  n=numest std=dispersion;			* SUBJECT TO CHANGE: est_median/mean = MEDIAN / MEAN;
+run;
+@@END VARIABLE: est_median@@
+@@END VARIABLE: est_mean@@
+@@END VARIABLE: numest@@
+@@END VARIABLE: dispersion@@
+
+* Merge median estimates with ancillary information on permno, actuals and report dates;
+* Determine whether most analysts are reporting estimates on primary or diluted basis;
+* following the methodology outlined in Livnat and Mendenhall (2006);
+proc sql; create table out_est 
+     as select distinct a.*, b.repdats, b.act, b.permno,
+     case when p_count>d_count then 'P' 
+             when p_count<=d_count then 'D' 
+     end as basis                                                                             
+     from out_est as a left join ibes1 as b
+     on a.ticker=b.ticker and a.fpedats=b.fpedats;
+quit;
+@@BEGIN VARIABLE: basis@@
+@@END VARIABLE: basis@@
+
+proc sql; 
+     drop table ibes, ibes1;
+	 create table comp2
+     as select a.*, b.est_mean, b.est_median, b.numest, b.dispersion, b.act
+     from comp1 as a left join out_est as b
+     on a.ticker=b.ticker and
+     year(a.fqenddt)*100+month(a.fqenddt)=year(b.fpedats)*100+month(b.fpedats);
+quit;
+
+@@BEGIN VARIABLE: sue_median_w90@@
+@@BEGIN VARIABLE: sue_mean_w90@@
+@@BEGIN VARIABLE: disp_w90@@
+@@BEGIN VARIABLE: disp_prc_w90@@
+@@BEGIN VARIABLE: afcnt_w90@@
+data afevar_&name.;
+set comp2;
+sue_median_w90=(act-est_median)/prccq;
+sue_mean_w90=(act-est_mean)/prccq;
+disp_w90=dispersion;
+disp_prc_w90=dispersion/prccq;
+afcnt_w90=numest;
+keep gvkey datadate fyearq fqtr sue_median_w90 sue_mean_w90 disp_w90 disp_prc_w90 afcnt_w90 ;
+run;
+@@END VARIABLE: sue_median_w90@@
+@@END VARIABLE: sue_mean_w90@@
+@@END VARIABLE: disp_w90@@
+@@END VARIABLE: disp_prc_w90@@
+@@END VARIABLE: afcnt_w90@@
+
+proc sort data=afevar_&name. nodupkey;
+by gvkey datadate;
+run;
+%MEND;
+
+%let ibes_vars_det= ticker value fpedats anndats revdats measure fpi estimator analys pdf usfirm;
+%let ibes_vars_sta= ticker fpedats ACTUAL  ACTDATS_ACT ANNDATS_ACT MEDEST NUMEST MEANEST stdev;
+
+         @@BEGIN VARIABLE: estdats1@@
+         @@BEGIN VARIABLE: repdats1@@
+%let ibes_where2_w90=where=(missing(repdats)=0 and missing(anndats)=0 and 0<intck('day',anndats,repdats)<=90);
+%let ibes_where2_w60=where=(missing(repdats)=0 and missing(anndats)=0 and 0<intck('day',anndats,repdats)<=60);
+%let ibes_where2_w30=where=(missing(repdats)=0 and missing(anndats)=0 and 0<intck('day',anndats,repdats)<=30);
+%let ibes_where2_qtr=where=(missing(pends)=0 and missing(repdats)=0 and missing(anndats)=0 and 0<=intck('month',anndats,pends)<=2);
+         @@END VARIABLE: estdats1@@
+          @@END VARIABLE: repdats1@@
+
+%afevar (infile=tickers, ibes1_where=&ibes_where1, ibes2_where=&ibes_where2_w90, ibes_var=&ibes_vars_det, name=w90);
+%afevar (infile=tickers, ibes1_where=&ibes_where1, ibes2_where=&ibes_where2_w60, ibes_var=&ibes_vars_det, name=w60);
+%afevar (infile=tickers, ibes1_where=&ibes_where1, ibes2_where=&ibes_where2_w30, ibes_var=&ibes_vars_det, name=w30);
+%afevar (infile=tickers, ibes1_where=&ibes_where1, ibes2_where=&ibes_where2_qtr, ibes_var=&ibes_vars_det, name=qtr);
+
+/**********************part four: extract consensus data and measure consensus benchmarked variable**************************/
+proc sql;
+	@@BEGIN VARIABLE: MEDEST@@
+	@@BEGIN VARIABLE: MEANEST@@
+    @@BEGIN VARIABLE: ACTUAL@@
+	@@BEGIN VARIABLE: stdev@@
+create table out_est as select ticker, fpedats, ANNDATS_ACT, statpers, NUMEST, MEANEST,medest, ACTUAL, stdev
+from ibes.statsum_epsus
+where statpers<=ANNDATS_ACT and  measure='EPS' and fpi in ('6','7') and &begindate<=fpedats<=&enddate;
+quit;
+    @@END VARIABLE: MEDEST@@
+	@@END VARIABLE: MEANEST@@
+    @@END VARIABLE: ACTUAL@@
+   	@@END VARIABLE: stdev@@
+
+proc sort data=out_est nodupkey;
+by ticker fpedats descending statpers;
+run;
+
+proc sort data=out_est nodupkey;
+by ticker fpedats ;
+run;
+
+data out_est;
+set out_est;
+rename  meanest=est_mean;
+rename  medest=est_median;
+rename  stdev=dispersion;
+rename  ACTUAL=act;
+run;
+
+proc sql; 
+	 create table comp2
+     as select a.*, b.est_mean, b.est_median, b.numest, b.dispersion, b.act
+     from comp1 as a left join out_est as b
+     on a.ticker=b.ticker and
+     year(a.fqenddt)*100+month(a.fqenddt)=year(b.fpedats)*100+month(b.fpedats);
+quit;
+
+		@@BEGIN VARIABLE: sue_median_con@@
+		@@BEGIN VARIABLE: sue_mean_con@@
+		@@BEGIN VARIABLE: disp_con@@
+		@@BEGIN VARIABLE: disp_prc_con@@
+		@@BEGIN VARIABLE: afcnt_con@@
+data afevar_con;
+set comp2;
+sue_median_con=(act-est_median)/(prccq/AJEXQ);
+sue_mean_con=(act-est_mean)/(prccq/AJEXQ);
+disp_con=dispersion;
+disp_prc_con=dispersion/(prccq/AJEXQ);
+afcnt_con=numest;
+keep gvkey datadate fyearq fqtr sue_median_con sue_mean_con disp_con disp_prc_con afcnt_con ;
+run;
+		@@END VARIABLE: sue_median_con@@
+		@@END VARIABLE: sue_mean_con@@
+		@@END VARIABLE: disp_con@@
+		@@END VARIABLE: disp_prc_con@@
+        @@END VARIABLE: afcnt_con@@
+
+proc sort data=afevar_con nodupkey;
+by gvkey datadate;
+run;
+@@BEGIN VARIABLE: sue_median_qtr@@
+		@@BEGIN VARIABLE: sue_mean_qtr@@
+		@@BEGIN VARIABLE: disp_qtr@@
+		@@BEGIN VARIABLE: disp_prc_qtr@@
+		@@BEGIN VARIABLE: afcnt_qtr@@
+
+/***************************Part Five: merge all the afevar tables*************************************/
+data vars.afevar;
+merge afevar_w90 afevar_w60 afevar_w30 afevar_qtr afevar_con;
+by gvkey datadate fyearq fqtr;
+drop sue_median_qtr sue_mean_qtr;
+run;
+@@END VARIABLE: sue_median_qtr@@
+		@@END VARIABLE: sue_mean_qtr@@
+		@@END VARIABLE: disp_qtr@@
+		@@EDN VARIABLE: disp_prc_qtr@@
+		@@END VARIABLE: afcnt_qtr@@
+

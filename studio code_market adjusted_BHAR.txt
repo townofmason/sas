@@ -1,0 +1,171 @@
+/* 这段代码用于计算事件研究中的短期和长期买入持有异常收益（BHAR）。 */
+/* 第一部分：构建市场回报和Barber and Lyon (1997)基准 */
+/*             1) 等权重市场回报 (ret_emkt) */
+/*             2) 市值加权市场回报 (ret_vmkt) */
+/*             3) 标普500回报 (ret_msp5) */
+/* 第二部分：计算相对于事件日期的窗口期内的BHAR */
+/*   %let origin=50; 指定窗口期的起始交易日相对于事件日期的偏移量 */
+/*   %let bgn=0; 指定窗口期的开始交易日相对于事件日期的偏移量 */
+/*   %let end=2; 指定窗口期的结束交易日相对于事件日期的偏移量 */
+/*   %let vbhar=00_d2; 指定BHAR变量的起始和结束日期标记 */
+/* 日期      : 2021年1月 */
+/* 作者      : Hui Ding */
+/* 变量      : - BGNDATE: 样本开始日期 */
+/*             - ENDDATE: 样本结束日期 */
+/* ***********************************************************************************************************/
+
+/* 变量综述 */
+/* 表格一：已知变量（直接引自数据库的变量） */
+/* | 变量名            | 解释                                      | 数据库来源          | */
+/* |-------------------|-------------------------------------------|---------------------| */
+/* | @@VARIABLE: permco@@permco             | 公司永久标识符                                | CRSP                | */
+/* | @@VARIABLE: prc@@prc                   | 股票价格                                    | CRSP                | */
+/* | @@VARIABLE: ret@@ret                   | 股票回报                                    | CRSP                | */
+/* | @@VARIABLE: vol@@vol                   | 交易量                                      | CRSP                | */
+/* | @@VARIABLE: shrout@@shrout             | 流通股数                                    | CRSP                | */
+/* | @@VARIABLE: cfacpr@@cfacpr             | 价格调整因子                                | CRSP                | */
+/* | @@VARIABLE: cfacshr@@cfacshr           | 股份调整因子                                | CRSP                | */
+/* | @@VARIABLE: ncusip@@ncusip             | CUSIP标识符                                 | CRSP                | */
+/* | @@VARIABLE: exchcd@@exchcd             | 交易所代码                                  | CRSP                | */
+/* | @@VARIABLE: shrcd@@shrcd               | 股份代码                                    | CRSP                | */
+/* | @@VARIABLE: siccd@@siccd               | SIC代码                                     | CRSP                | */
+/* 表格二：计算得到的变量 */
+/* | 变量名           | 变量解释                                      | 变量计算公式                          | */
+/* |------------------|-----------------------------------------------|---------------------------------------| */
+/* | @@VARIABLE: cret@@cret                 | 累计股票回报                                | \( \text{cret} = \prod (1 + \text{ret}) - 1 \) | */
+/* | @@VARIABLE: cret_emkt@@cret_emkt       | 累计等权重市场回报                          | \( \text{cret\_emkt} = \prod (1 + \text{ret\_emkt}) - 1 \) | */
+/* | @@VARIABLE: cret_vmkt@@cret_vmkt       | 累计市值加权市场回报                        | \( \text{cret\_vmkt} = \prod (1 + \text{ret\_vmkt}) - 1 \) | */
+/* | @@VARIABLE: cret_msp5@@cret_msp5       | 累计标普500回报                             | \( \text{cret\_msp5} = \prod (1 + \text{ret\_msp5}) - 1 \) | */
+/* | @@VARIABLE: bhar_emkt@@bhar_emkt       | 买入持有异常收益（等权重）                  | \( \text{bhar\_emkt} = \frac{\text{cret\_end} + 1}{\text{cret\_bgn\_l1} + 1} - \frac{\text{cret\_emkt\_end} + 1}{\text{cret\_emkt\_bgn\_l1} + 1} \) | */
+/* | @@VARIABLE: bhar_vmkt@@bhar_vmkt       | 买入持有异常收益（市值加权）                | \( \text{bhar\_vmkt} = \frac{\text{cret\_end} + 1}{\text{cret\_bgn\_l1} + 1} - \frac{\text{cret\_vmkt\_end} + 1}{\text{cret\_vmkt\_bgn\_l1} + 1} \) | */
+/* | @@VARIABLE: bhar_msp5@@bhar_msp5       | 买入持有异常收益（标普500）                 | \( \text{bhar\_msp5} = \frac{\text{cret\_end} + 1}{\text{cret\_bgn\_l1} + 1} - \frac{\text{cret\_msp5\_end} + 1}{\text{cret\_msp5\_bgn\_l1} + 1} \) | */
+
+/* 表格三：有时间限制的变量的时间范围 */
+/* | 变量名           | 起始日期   | 结束日期     | */
+/* |------------------|------------|--------------| */
+/* | @@VARIABLE: bgndate@@bgndate         | 01JAN2010  | 31DEC2020    | */
+/* | @@VARIABLE: enddate@@enddate         | 01JAN2010  | 31DEC2020    | */
+
+/* Step 1. Specifying Options */
+libname vars "/home/yale/yiliwu/trial/bhar/output"; 
+libname input "/home/yale/yiliwu/trial/bhar/input"; 
+%let bgndate = 01JAN2010; /* 选择事件研究所需数据的开始日期 */
+%let enddate = 31DEC2020; /* 选择事件研究所需数据的结束日期 */
+
+/* 创建包含月度股票和事件变量的CRSP子样本 */
+/* 限制股票类型（仅普通股） */
+/*%let sfilter = (shrcd in (10,11,12));*/
+%let sfilter = 1=1;
+@@BEGIN VARIABLE: shrout@@
+@@BEGIN VARIABLE: cfacpr@@
+@@BEGIN VARIABLE: cfacshr@@
+%let msfvars_m = permco prc @@BEGIN VARIABLE: ret@@ret @@END VARIABLE: ret@@  @@BEGIN VARIABLE: vol@@vol @@END VARIABLE: vol@@ shrout cfacpr cfacshr;
+@@END VARIABLE: shrout@@
+@@END VARIABLE: cfacpr@@
+@@END VARIABLE: cfacshr@@
+
+%let msevars_m = @@BEGIN VARIABLE: ncusip@@ncusip @@END VARIABLE: ncusip@@  @@BEGIN VARIABLE: exchcd@@exchcd @@END VARIABLE: exchcd@@  @@BEGIN VARIABLE: shrcd@@shrcd @@END VARIABLE: shrcd@@ siccd;
+
+/* 从CRSP日度数据文件（crsp.dse文件）中选择的变量 */
+%let msfvars_d = permco prc ret;
+%let msevars_d = exchcd shrcd;
+
+/* 此过程创建名为“CRSP_M”的月度CRSP数据集 */
+%crspmerge(s=m,start=&bgndate,end=&enddate,sfvars=&msfvars_m,sevars=&msevars_m,filters=&sfilter);
+%crspmerge(s=d,start=&bgndate,end=&enddate,sfvars=&msfvars_d,sevars=&msevars_d,filters=&sfilter);
+
+/****指定BHAR窗口******/
+%let origin=50; /* 指定窗口期的起始交易日相对于事件日期的偏移量 */
+%let bgn=0;   /* 指定窗口期的开始交易日相对于事件日期的偏移量 */
+%let end=2; /* 指定窗口期的结束交易日相对于事件日期的偏移量 */
+%let vbhar=00_d2;   /* 指定BHAR变量的起始和结束日期标记 */
+
+/******指定事件表*****/
+%let in_table=event;  /* 指定事件表 */
+%let in_edate=video_dt;  /* 指定事件日期 */
+
+data evt_input;
+set input.&in_table.;
+edate=&in_edate.;
+format edate date9.;
+keep permno edate;
+run;   
+
+@@BEGIN VARIABLE: permco@@
+proc sql;
+create table crsp_d1 as select a.*, b.vwretd as ret_vmkt, b.ewretd as ret_emkt, b.sprtrn as ret_msp5
+from crsp_d (keep=permno date @@VARIABLE: ret@@ret) as a left join crsp.dsi as b
+on a.date=b.date;
+quit;
+@@END VARIABLE: permco@@
+
+@@BEGIN VARIABLE: prc@@
+proc sort data=crsp_d1 nodupkey;
+by permno date;
+run;
+@@END VARIABLE: prc@@
+
+@@BEGIN VARIABLE: ret@@
+proc expand data=crsp_d1 out=crsp_output method=none;
+  by permno; id date;
+  convert @@VARIABLE: ret@@ret= @@BEGIN VARIABLE: cret@@cret @@END VARIABLE: cret@@/transformout=(+1 cuprod -1);
+  convert ret_emkt= @@BEGIN VARIABLE: cret_emkt@@cret_emkt @@END VARIABLE: cret_emkt@@/transformout=(+1 cuprod -1);
+  convert ret_vmkt= @@BEGIN VARIABLE: cret_vmkt@@cret_vmkt @@END VARIABLE: cret_vmkt@@/transformout=(+1 cuprod -1);
+  convert ret_msp5= @@BEGIN VARIABLE: cret_msp5@@cret_msp5 @@END VARIABLE: cret_msp5@@/transformout=(+1 cuprod -1);
+run;
+@@END VARIABLE: ret@@
+/****crsp_output是股票及其基准的日度回报表*****/
+/****crsp_output是第一部分的结果和第二部分的输入*****/
+/* 第一部分结束 */
+
+/* 第二部分开始 */
+data caldates;
+merge crsp.dsi(keep=date rename=(date=origin))
+      crsp.dsi(keep=date firstobs=%eval(&origin.-1) rename=(date=evtdate_l1))
+	  crsp.dsi(keep=date firstobs=%eval(&origin.) rename=(date=evtdate))
+	  crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn.-1) rename=(date=dt_bgn_bhar_l1))
+      crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn.) rename=(date=dt_bgn_bhar))
+      crsp.dsi(keep=date firstobs=%eval(&origin.+&end.) rename=(date=dt_end_bhar));
+  format evtdate evtdate_l1 dt_bgn_bhar_l1 dt_bgn_bhar  dt_end_bhar mmddyy10.;
+  label evtdate="事件交易日"
+        evtdate_l1="事件交易日的前一个交易日"
+		dt_bgn_bhar_l1="BHAR窗口期开始日期的前一个交易日"
+        dt_bgn_bhar="BHAR窗口期的开始日期"
+	    dt_end_bhar="BHAR窗口期的结束日期";
+		index+1;
+  if nmiss(evtdate, evtdate_l1,dt_bgn_bhar_l1, dt_bgn_bhar, dt_end_bhar)=0;
+run;
+
+proc sql;
+create table evt_d1 as select a.*, b.evtdate, b.evtdate_l1, b.dt_bgn_bhar_l1, b.dt_bgn_bhar, b.dt_end_bhar, b.index
+from evt_input as  a left join caldates as b
+on a.edate>b.evtdate_l1 and a.edate<=b.evtdate;
+quit;
+
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_bgn_l1, b.cret_emkt as cret_emkt_bgn_l1, b.cret_vmkt as cret_vmkt_bgn_l1
+                                 , b.cret_msp5 as cret_msp5_bgn_l1
+								 from evt_d1 as a left join crsp_output as b
+								 on a.permno=b.permno and a.dt_bgn_bhar_l1=b.date;
+								 quit;
+
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_end, b.cret_emkt as cret_emkt_end
+                                 , b.cret_vmkt as cret_vmkt_end, b.cret_msp5 as cret_msp5_end
+                             	 from evt_d1 as a left join crsp_output as b
+							     on a.permno=b.permno and a.dt_end_bhar=b.date;
+								 quit;
+
+data vars.bhar_mkt_&vbhar.;
+set evt_d1;
+@@BEGIN VARIABLE: bhar_emkt@@
+bhar_emkt_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_emkt_end+1)/(cret_emkt_bgn_l1+1);
+@@END VARIABLE: bhar_emkt@@
+@@BEGIN VARIABLE: bhar_vmkt@@
+bhar_vmkt_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vmkt_end+1)/(cret_vmkt_bgn_l1+1);
+@@END VARIABLE: bhar_vmkt@@
+@@BEGIN VARIABLE: bhar_msp5@@
+bhar_msp5_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_msp5_end+1)/(cret_msp5_bgn_l1+1);
+@@END VARIABLE: bhar_msp5@@
+keep permno edate evtdate bhar_emkt_&vbhar. bhar_vmkt_&vbhar. bhar_msp5_&vbhar.;
+run;

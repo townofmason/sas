@@ -1,0 +1,448 @@
+/* 
+该代码用于计算事件研究中的短期和长期买入持有异常收益（BHAR）。代码分为两部分：
+- 第一部分：构建市场回报和Barber and Lyon (1997)基准。
+- 第二部分：计算相对于事件日期的窗口期内的BHAR。
+*/
+
+/* 
+变量概述：
+1. 已知变量（直接来自数据库）：
+   | 变量名        | 含义                                      | 数据库来源          |
+   |-------------|-------------------------------------------|-------------------|
+   | @@VARIABLE: permno@@permno        | CRSP证券标识符                             | crsp.msf          |
+   | @@VARIABLE: prc@@prc            | 股票价格                                   | crsp.msf          |
+   | @@VARIABLE: ret@@ret            | 股票回报率                                 | crsp.msf          |
+   | @@VARIABLE: vol@@vol            | 交易量                                     | crsp.msf          |
+   | @@VARIABLE: shrout@@shrout      | 流通股数                                   | crsp.msf          |
+   | @@VARIABLE: cfacpr@@cfacpr      | 价格调整因子                               | crsp.msf          |
+   | @@VARIABLE: cfacshr@@cfacshr    | 流通股数调整因子                           | crsp.msf          |
+   | @@VARIABLE: ncusip@@ncusip      | NCUSIP代码                                 | crsp.mse          |
+   | @@VARIABLE: exchcd@@exchcd      | 交易所代码                                 | crsp.mse          |
+   | @@VARIABLE: shrcd@@shrcd        | 股票类别代码                               | crsp.mse          |
+   | @@VARIABLE: siccd@@siccd        | 行业分类代码                               | crsp.mse          |
+   | @@VARIABLE: gvkey@@gvkey        | 公司标识符                                 | comp.funda        |
+   | @@VARIABLE: datadate@@datadate  | 数据日期                                   | comp.funda        |
+   | @@VARIABLE: SEQ@@SEQ            | 股东权益                                   | comp.funda        |
+   | @@VARIABLE: PSTKRV@@PSTKRV      | 优先股赎回价值                             | comp.funda        |
+   | @@VARIABLE: PSTKL@@PSTKL        | 优先股清算价值                             | comp.funda        |
+   | @@VARIABLE: TXDB@@TXDB          | 递延税项                                   | comp.funda        |
+   | @@VARIABLE: ITCB@@ITCB          | 投资税抵免                                 | comp.funda        |
+
+2. 计算得到的变量：
+   | 变量名           | 含义                                      | 计算公式                          |
+   |------------------|-------------------------------------------|-----------------------------------|
+   | @@VARIABLE: P@@P            | 调整后的股票价格                         | P = abs(prc)/cfacpr               |
+   | @@VARIABLE: TSO@@TSO        | 调整后的流通股数                         | TSO = shrout * cfacshr * 1000     |
+   | @@VARIABLE: ME@@ME          | 公司市值（百万美元）                     | ME = abs(prc) * shrout / 1000     |
+   | @@VARIABLE: me_comp@@me_comp| 公司级别的总市值                         | me_comp = sum(me)                 |
+   | @@VARIABLE: BE@@BE          | 股东权益账面价值                         | BE = SEQ                          |
+   | @@VARIABLE: BM@@BM          | 账面市值比                               | BM = BE / me_comp                 |
+   | @@VARIABLE: SIZE@@SIZE      | 公司规模（市值）                         | SIZE = me                         |
+   | @@VARIABLE: r_s05@@r_s05    | 五分位规模组合                           | 根据市值分位数计算                 |
+   | @@VARIABLE: r_s10@@r_s10    | 十分位规模组合                           | 根据市值分位数计算                 |
+   | @@VARIABLE: r_sb25@@r_sb25  | 五分位规模和五分位账面市值比组合         | r_sb25 = r_s05 || r_s05b05         |
+   | @@VARIABLE: r_sb50@@r_sb50  | 十分位规模和五分位账面市值比组合         | r_sb50 = r_s10 || r_s10b05         |
+   | @@VARIABLE: cret@@cret      | 累计回报                                 | cret = (1 + ret)的累积乘积 - 1    |
+   | @@VARIABLE: cret_esb25@@cret_esb25 | 五分位规模和五分位账面市值比组合的累计回报 | cret_esb25 = (1 + ret_esb25)的累积乘积 - 1 |
+   | @@VARIABLE: cret_vsb25@@cret_vsb25 | 五分位规模和五分位账面市值比组合的市值加权累计回报 | cret_vsb25 = (1 + ret_vsb25)的累积乘积 - 1 |
+   | @@VARIABLE: cret_esb50@@cret_esb50 | 十分位规模和五分位账面市值比组合的累计回报 | cret_esb50 = (1 + ret_esb50)的累积乘积 - 1 |
+   | @@VARIABLE: cret_vsb50@@cret_vsb50 | 十分位规模和五分位账面市值比组合的市值加权累计回报 | cret_vsb50 = (1 + ret_vsb50)的累积乘积 - 1 |
+   | @@VARIABLE: bhar_esb25@@bhar_esb25 | 五分位规模和五分位账面市值比组合的BHAR | bhar_esb25 = (cret_end + 1) / (cret_bgn_l1 + 1) - (cret_esb25_end + 1) / (cret_esb25_bgn_l1 + 1) |
+   | @@VARIABLE: bhar_esb50@@bhar_esb50 | 十分位规模和五分位账面市值比组合的BHAR | bhar_esb50 = (cret_end + 1) / (cret_bgn_l1 + 1) - (cret_esb50_end + 1) / (cret_esb50_bgn_l1 + 1) |
+   | @@VARIABLE: bhar_vsb25@@bhar_vsb25 | 五分位规模和五分位账面市值比组合的市值加权BHAR | bhar_vsb25 = (cret_end + 1) / (cret_bgn_l1 + 1) - (cret_vsb25_end + 1) / (cret_vsb25_bgn_l1 + 1) |
+   | @@VARIABLE: bhar_vsb50@@bhar_vsb50 | 十分位规模和五分位账面市值比组合的市值加权BHAR | bhar_vsb50 = (cret_end + 1) / (cret_bgn_l1 + 1) - (cret_vsb50_end + 1) / (cret_vsb50_bgn_l1 + 1) |
+*/
+
+/* 时间范围变量：
+   | 变量名        | 含义                                      | 时间范围          |
+   |-------------|-------------------------------------------|-------------------|
+   | bgndate     | 样本开始日期                               | 01JAN2010         |
+   | enddate     | 样本结束日期                               | 31DEC2020         |
+   | origin      | 事件日期的基准交易日                       | 50个交易日        |
+   | bgn         | BHAR窗口的开始交易日（相对于事件日期）      | 0个交易日         |
+   | end         | BHAR窗口的结束交易日（相对于事件日期）      | 2个交易日         |
+*/
+
+/* Step 1. 指定选项 */
+libname vars "/home/yale/yiliwu/trial/bhar/output"; 
+libname input "/home/yale/yiliwu/trial/bhar/input"; 
+%let bgndate = 01JAN2010; /* 选择事件研究数据所需的开始日期 */
+%let enddate = 31DEC2020; /* 选择事件研究数据所需的结束日期 */
+
+/* 创建CRSP子样本，包含月度股票和事件变量 */
+/* 限制股票类型（仅普通股） */
+%let sfilter = (shrcd in (10,11,12));
+
+/* 从CRSP月度数据文件（crsp.msf文件）中选择的变量 */
+%let msfvars_m = permco prc ret vol shrout cfacpr cfacshr;
+%let msevars_m = ncusip exchcd shrcd siccd ;
+
+/* 从CRSP日度数据文件（crsp.dse文件）中选择的变量 */
+%let msfvars_d = permco prc ret ;
+%let msevars_d =  exchcd shrcd  ;
+
+@@BEGIN VARIABLE: permno@@
+@@BEGIN VARIABLE: prc@@
+@@BEGIN VARIABLE: ret@@
+@@BEGIN VARIABLE: vol@@
+@@BEGIN VARIABLE: shrout@@
+@@BEGIN VARIABLE: cfacpr@@
+@@BEGIN VARIABLE: cfacshr@@
+@@BEGIN VARIABLE: ncusip@@
+@@BEGIN VARIABLE: exchcd@@
+@@BEGIN VARIABLE: shrcd@@
+@@BEGIN VARIABLE: siccd@@
+/* 该过程创建名为"CRSP_M"的月度CRSP数据集 */
+%crspmerge(s=m,start=&bgndate,end=&enddate,sfvars=&msfvars_m,sevars=&msevars_m,filters=&sfilter);
+%crspmerge(s=d,start=&bgndate,end=&enddate,sfvars=&msfvars_d,sevars=&msevars_d,filters=&sfilter);
+@@END VARIABLE: permno@@
+@@END VARIABLE: prc@@
+@@END VARIABLE: ret@@
+@@END VARIABLE: vol@@
+@@END VARIABLE: shrout@@
+@@END VARIABLE: cfacpr@@
+@@END VARIABLE: cfacshr@@
+@@END VARIABLE: ncusip@@
+@@END VARIABLE: exchcd@@
+@@END VARIABLE: shrcd@@
+@@END VARIABLE: siccd@@
+
+/****指定BHAR窗口******/
+%let origin=50; /* 指定事件日期的基准交易日 */
+%let bgn=0;   /* 指定BHAR窗口的开始交易日（相对于事件日期） */
+%let end=2; /* 指定BHAR窗口的结束交易日（相对于事件日期） */   
+%let vbhar=00_d2;   /* 指定BHAR变量的开始和结束日标记 */
+
+/******指定事件表*****/
+%let in_table=event;  /* 指定事件表 */
+%let in_edate=video_dt;  /* 指定事件日期 */
+data evt_input;
+set input.&in_table.;
+edate=&in_edate.;
+format edate date9.;
+keep permno edate;
+run;   
+
+/* 第一部分开始 */
+@@BEGIN VARIABLE: P@@
+@@BEGIN VARIABLE: TSO@@
+@@BEGIN VARIABLE: ME@@
+/* 调整月度数据中的股票价格和流通股数 */
+data crsp_m;
+set crsp_m;
+DATE = INTNX("MONTH",date,0,"E");
+P = abs(prc)/cfacpr;
+TSO=shrout*cfacshr*1000;
+if TSO<=0 then TSO=.;
+ME = abs(prc)*shrout/1000;
+label P = "期末调整后的价格";
+label TSO = "调整后的流通股数";
+label ME = "公司市值（百万美元）";
+drop ncusip prc cfacpr shrout shrcd;
+format ret percentn8.4 ME P dollar12.3 TSO comma12.;
+run;
+@@END VARIABLE: P@@
+@@END VARIABLE: TSO@@
+@@END VARIABLE: ME@@
+
+@@BEGIN VARIABLE: me_comp@@
+/* 创建公司级别的总市值 */
+proc sql  undo_policy=none;
+create table crsp_m
+as select *, sum(me) as me_comp "公司级别的总市值（百万美元）" format dollar12.3
+from crsp_m
+group by permco,date
+order by permno,date;
+quit;
+@@END VARIABLE: me_comp@@
+
+@@BEGIN VARIABLE: gvkey@@
+@@BEGIN VARIABLE: datadate@@
+@@BEGIN VARIABLE: SEQ@@
+@@BEGIN VARIABLE: BE@@
+@@BEGIN VARIABLE: PSTKRV@@
+@@BEGIN VARIABLE: PSTKL@@
+@@BEGIN VARIABLE: TXDB@@
+@@BEGIN VARIABLE: ITCB@@
+/* 从Compustat获取股东权益账面价值以创建B/P排名 */
+data comp1;
+set comp.funda (keep=gvkey datadate cusip indfmt datafmt consol popsrc
+    SEQ PSTKRV PSTKL PSTK TXDB ITCB);
+where indfmt='INDL' and datafmt='STD' and consol='C' and popsrc='D'
+  and datadate>="&bgndate."d;
+  if SEQ>0;                        
+  BE = SEQ;  /* 股东权益 */
+  label BE = "股东权益账面价值";
+  if BE>=0;
+  /* Barber and Lyon (JFE 1998):                                                 */
+  /* BE = 股东权益 */
+ label datadate = "财年结束日期";
+ keep gvkey datadate BE;
+run;
+@@END VARIABLE: gvkey@@
+@@END VARIABLE: datadate@@
+@@END VARIABLE: SEQ@@
+@@END VARIABLE: BE@@
+@@END VARIABLE: PSTKRV@@
+@@END VARIABLE: PSTKL@@
+@@END VARIABLE: TXDB@@
+@@END VARIABLE: ITCB@@
+
+@@BEGIN VARIABLE: permco@@
+@@BEGIN VARIABLE: linkprim@@
+/* 添加历史PERMCO和Permno标识符 */
+proc sql;
+  create table comp2
+  as select a.*, b.lpermco as permco, b.lpermno as permno, b.linkprim
+  from comp1 as a, crsp.ccmxpf_linktable as b
+  where a.gvkey = b.gvkey and
+  b.LINKTYPE in ("LU","LC") and
+ (b.LINKDT <= a.datadate) and (a.datadate <= b.LINKENDDT or missing(b.LINKENDDT));
+quit;
+@@END VARIABLE: permco@@
+@@END VARIABLE: linkprim@@
+
+@@BEGIN VARIABLE: BM@@
+/* 构建每个财年末的账面市值比 */
+proc sql;
+  create table comp3
+  as select distinct b.permno,a.gvkey,year(a.datadate) as YEAR,a.datadate,a.linkprim,
+  a.BE,b.me,b.siccd,a.be/b.me_comp as BM "账面市值比" format comma8.2
+  from comp2 as a, crsp_m as b
+  where a.permco=b.permco and datadate=intnx("month",date,0,"E")
+order by permno,datadate;
+quit;
+@@END VARIABLE: BM@@
+
+@@BEGIN VARIABLE: SIZE@@
+data size;
+set crsp_m;
+by permno date;
+if month(date)=6;rename me=SIZE;
+run;
+@@END VARIABLE: SIZE@@
+
+proc sort data=size;
+by date size;
+run;
+
+proc univariate data=size noprint;
+where exchcd=1;
+by date;
+var size;
+output out=NYSE pctlpts = 10 to 90 by 10 pctlpre=dec;
+run;
+
+@@BEGIN VARIABLE: r_s05@@
+@@BEGIN VARIABLE: r_s10@@
+data size;
+merge size NYSE;
+by date;
+if size>0 and size < dec20 then r_s05 = 0;
+else if size >= dec20 and size < dec40 then r_s05 =1;
+else if size >= dec40 and size < dec60 then r_s05 =2;
+else if size >= dec60 and size < dec80 then r_s05 =3;
+else if size >= dec80                  then r_s05 =4;
+if size>0 and size < dec10 then r_s10 = 0;
+else if size >= dec10 and size < dec20 then r_s10 =1;
+else if size >= dec20 and size < dec30 then r_s10 =2;
+else if size >= dec30 and size < dec40 then r_s10 =3;
+else if size >= dec40 and size < dec50 then r_s10 =4;
+else if size >= dec50 and size < dec60 then r_s10 =5;
+else if size >= dec60 and size < dec70 then r_s10 =6;
+else if size >= dec70 and size < dec80 then r_s10 =7;
+else if size >= dec80 and size < dec90 then r_s10 =8;
+else if size >= dec90                  then r_s10 =9;
+drop dec10 dec20 dec30 dec40 dec50 dec60 dec70 dec80 dec90;
+label r_s05 = "五分位规模组合";
+label r_s10 = "十分位规模组合";
+run;
+@@END VARIABLE: r_s05@@
+@@END VARIABLE: r_s10@@
+
+proc sql;
+  create table comp6
+  as select distinct a.permno, a.gvkey, b.date, b.r_s05, b.r_s10, b.size, a.year, a.bm
+  from comp3 as a, size as b
+  where a.permno=b.permno and year(date)=year+1
+   and not missing(size+bm+ret);
+quit;
+
+proc sort data=comp6 out=port nodupkey; by date r_s05 permno; run;
+
+@@BEGIN VARIABLE: r_s05b05@@
+proc rank data=port out=port group=5;
+  by date r_s05;
+  var bm;
+  ranks r_s05b05;
+run;
+@@END VARIABLE: r_s05b05@@
+
+proc sort data=port out=port nodupkey; by date r_s10 permno; run;
+
+@@BEGIN VARIABLE: r_s10b05@@
+proc rank data=port out=port group=5;
+  by date r_s10;
+  var bm;
+  ranks r_s10b05;
+run;
+@@END VARIABLE: r_s10b05@@
+
+@@BEGIN VARIABLE: r_sb25@@
+@@BEGIN VARIABLE: r_sb50@@
+data port;
+set port;
+r_sb25=put(r_s05,1.)||put(r_s05b05,1.);
+if index(r_sb25, '.') then delete;
+label r_sb25="五分位规模和五分位账面市值比组合编号";
+r_sb50=put(r_s10,1.)||put(r_s10b05,1.);
+if index(r_sb50, '.') then delete;
+label r_sb50="十分位规模和五分位账面市值比组合编号";
+run;
+@@END VARIABLE: r_sb25@@
+@@END VARIABLE: r_sb50@@
+
+proc sql;
+  create table crsp_d1
+  as select a.*, b.date as formdate "形成日期", b.r_s05, b.r_s10, b.size as sizew, b.r_sb25, b.r_sb50
+  from crsp_d (keep=permno date ret) as a, port as b
+  where a.permno=b.permno and intnx('month', b.date,1,'e')<=a.date<=intnx('month', b.date,12,'e');
+quit;
+
+@@BEGIN VARIABLE: ret_esb25@@
+@@BEGIN VARIABLE: ret_vsb25@@
+proc sql;
+create table ret_sb25 as select date, r_sb25, mean(ret) as ret_esb25,  sum(ret*sizew)/sum(sizew) as ret_vsb25
+from crsp_d1
+where sizew>0
+group by date, r_sb25;
+quit;
+@@END VARIABLE: ret_esb25@@
+@@END VARIABLE: ret_vsb25@@
+
+@@BEGIN VARIABLE: ret_esb50@@
+@@BEGIN VARIABLE: ret_vsb50@@
+proc sql;
+create table ret_sb50 as select date, r_sb50, mean(ret) as ret_esb50,  sum(ret*sizew)/sum(sizew) as ret_vsb50
+from crsp_d1
+where sizew>0
+group by date, r_sb50;
+quit;
+@@END VARIABLE: ret_esb50@@
+@@END VARIABLE: ret_vsb50@@
+
+proc sql;
+create table crsp_d2 as select a.*, b.ret_esb25, b.ret_vsb25
+from crsp_d1 as a left join ret_sb25 as b
+on a.date=b.date and a.r_sb25=b.r_sb25;
+quit;
+
+proc sql;
+create table crsp_d2 as select a.*, b.ret_esb50, b.ret_vsb50
+from crsp_d2 as a left join ret_sb50 as b
+on a.date=b.date and a.r_sb50=b.r_sb50;
+quit;
+
+proc sort data=crsp_d2 nodupkey;
+by permno date;
+run;
+
+@@BEGIN VARIABLE: cret@@
+@@BEGIN VARIABLE: cret_esb25@@
+@@BEGIN VARIABLE: cret_vsb25@@
+@@BEGIN VARIABLE: cret_esb50@@
+@@BEGIN VARIABLE: cret_vsb50@@
+proc expand data=crsp_d2 out=crsp_output method=none;
+  by permno; id date;
+  convert ret=cret/transformout=(+1 cuprod -1);
+  convert ret_esb25=cret_esb25/transformout=(+1 cuprod -1);
+  convert ret_vsb25=cret_vsb25/transformout=(+1 cuprod -1);
+  convert ret_esb50=cret_esb50/transformout=(+1 cuprod -1);
+  convert ret_vsb50=cret_vsb50/transformout=(+1 cuprod -1);
+run;
+@@END VARIABLE: cret@@
+@@END VARIABLE: cret_esb25@@
+@@END VARIABLE: cret_vsb25@@
+@@END VARIABLE: cret_esb50@@
+@@END VARIABLE: cret_vsb50@@
+
+/****crsp_output是股票及其基准的日度回报表*****/
+/****crsp_output是第一部分的结束和第二部分的输入*****/
+/* 第一部分结束 */
+
+/* 第二部分开始 */
+data caldates;
+merge crsp.dsi(keep=date rename=(date=origin))
+      crsp.dsi(keep=date firstobs=%eval(&origin.-1) rename=(date=evtdate_l1))
+	   crsp.dsi(keep=date firstobs=%eval(&origin.) rename=(date=evtdate))
+	   crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn.-1) rename=(date=dt_bgn_bhar_l1))
+       crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn.) rename=(date=dt_bgn_bhar))
+       crsp.dsi(keep=date firstobs=%eval(&origin.+&end.) rename=(date=dt_end_bhar));
+  format evtdate evtdate_l1 dt_bgn_bhar_l1 dt_bgn_bhar  dt_end_bhar mmddyy10.;
+  label evtdate="事件交易日"
+        evtdate_l1="事件交易日的前一个交易日"
+		dt_bgn_bhar_l1="BHAR窗口开始日的前一个交易日"
+        dt_bgn_bhar="BHAR窗口的开始日"
+	    dt_end_bhar="BHAR窗口的结束日";
+		index+1;
+  if nmiss(evtdate, evtdate_l1,dt_bgn_bhar_l1, dt_bgn_bhar, dt_end_bhar)=0;
+run;
+
+proc sql;
+create table evt_d1 as select a.*, b.evtdate, b.evtdate_l1, b.dt_bgn_bhar_l1, b.dt_bgn_bhar, b.dt_end_bhar, b.index
+from evt_input as  a left join caldates as b
+on a.edate>b.evtdate_l1 and a.edate<=b.evtdate;
+quit;
+
+@@BEGIN VARIABLE: cret_bgn_l1@@
+@@BEGIN VARIABLE: cret_esb25_bgn_l1@@
+@@BEGIN VARIABLE: cret_vsb25_bgn_l1@@
+@@BEGIN VARIABLE: cret_esb50_bgn_l1@@
+@@BEGIN VARIABLE: cret_vsb50_bgn_l1@@
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_bgn_l1                                
+                                 , b.cret_esb25 as cret_esb25_bgn_l1, b.cret_vsb25 as cret_vsb25_bgn_l1
+                                 , b.cret_esb50 as cret_esb50_bgn_l1, b.cret_vsb50 as cret_vsb50_bgn_l1
+																 from evt_d1 as a left join crsp_output as b
+																 on a.permno=b.permno and a.dt_bgn_bhar_l1=b.date;
+																 quit;
+@@END VARIABLE: cret_bgn_l1@@
+@@END VARIABLE: cret_esb25_bgn_l1@@
+@@END VARIABLE: cret_vsb25_bgn_l1@@
+@@END VARIABLE: cret_esb50_bgn_l1@@
+@@END VARIABLE: cret_vsb50_bgn_l1@@
+
+@@BEGIN VARIABLE: cret_end@@
+@@BEGIN VARIABLE: cret_esb25_end@@
+@@BEGIN VARIABLE: cret_vsb25_end@@
+@@BEGIN VARIABLE: cret_esb50_end@@
+@@BEGIN VARIABLE: cret_vsb50_end@@
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_end
+                                 , b.cret_esb25 as cret_esb25_end, b.cret_vsb25 as cret_vsb25_end
+                                 , b.cret_esb50 as cret_esb50_end, b.cret_vsb50 as cret_vsb50_end
+																 from evt_d1 as a left join crsp_output as b
+																 on a.permno=b.permno and a.dt_end_bhar=b.date;
+																 quit;
+@@END VARIABLE: cret_end@@
+@@END VARIABLE: cret_esb25_end@@
+@@END VARIABLE: cret_vsb25_end@@
+@@END VARIABLE: cret_esb50_end@@
+@@END VARIABLE: cret_vsb50_end@@
+
+@@BEGIN VARIABLE: bhar_esb25@@
+@@BEGIN VARIABLE: bhar_esb50@@
+@@BEGIN VARIABLE: bhar_vsb25@@
+@@BEGIN VARIABLE: bhar_vsb50@@
+data vars.bhar_sb_&vbhar.;
+set evt_d1;
+bhar_esb25_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_esb25_end+1)/(cret_esb25_bgn_l1+1);
+bhar_esb50_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_esb50_end+1)/(cret_esb50_bgn_l1+1);	
+bhar_vsb25_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vsb25_end+1)/(cret_vsb25_bgn_l1+1);
+bhar_vsb50_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vsb50_end+1)/(cret_vsb50_bgn_l1+1);	
+keep permno edate evtdate bhar_esb25_&vbhar. bhar_esb50_&vbhar. bhar_vsb25_&vbhar. bhar_vsb50_&vbhar.;
+run;
+@@END VARIABLE: bhar_esb25@@
+@@END VARIABLE: bhar_esb50@@
+@@END VARIABLE: bhar_vsb25@@
+@@END VARIABLE: bhar_vsb50@@

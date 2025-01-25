@@ -1,0 +1,403 @@
+/*
+这段代码的主要功能是将 Ravenpack 新闻稿数据与公司财务数据进行匹配，并统计每个季度公司的新闻稿数量。代码首先从 Ravenpack 数据库提取新闻稿信息，包括公司标识符、发布时间和相关标识，然后将这些信息与 Compustat 数据库中的公司季度数据进行合并，最后生成包含公司季度标识符和对应新闻稿数量的数据集 `vars.qcnt_press`。
+*/
+
+/*
+表格一：已知变量（直接引自数据库）
+| 名字               | 含义                                       | 数据库                     |
+|--------------------|--------------------------------------------|----------------------------|
+| @@VARIABLE: rpna_date_utc@@rpna_date_utc  | 新闻稿发布日期（UTC）                         | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: rpna_time_utc@@rpna_time_utc | 新闻稿发布时间（UTC）                         | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: rp_entity_id@@rp_entity_id   | Ravenpack实体标识符                   | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: entity_name@@entity_name     | 实体名称                                 | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: country_code@@country_code  | 国家代码                                 | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: topic@@topic       | 主题                                       | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: group@@group       | 新闻组                                       | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: type@@type        | 新闻类型                                       | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: category@@category      | 新闻类别                                   | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: isin@@isin        | ISIN 代码                                 | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: rp_story_id@@rp_story_id   | Ravenpack 新闻故事标识符                     | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: relevance@@relevance      | 相关性                                   | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: ens@@ens         | 实体情绪分数                               | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: ENS_KEY@@ENS_KEY       | 实体情绪关键字                               | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: source@@source      | 新闻来源                                   | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: css@@css          | 公司状态代码                             | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: nip@@nip         | 新闻影响程度                                | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: bam@@bam         | 业务活动类型代码                           | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: peq@@peq         | 权益工具类型代码                           | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: bca@@bca         | 业务变更类型代码                           | rpna.pr_equities_YYYY 或 rpna.dj_equities_YYYY |
+| @@VARIABLE: data_value@@data_value      | CUSIP/TICKER  代码                  | rpna.rp_company_mapping  |
+| @@VARIABLE: range_start@@range_start   | 有效范围开始时间                     | rpna.rp_company_mapping  |
+| @@VARIABLE: range_end@@range_end     | 有效范围结束时间                       | rpna.rp_company_mapping  |
+| @@VARIABLE: gvkey@@gvkey        | 公司标识符                             | ciq.wrds_isin, ciq.wrds_cusip, ciq.wrds_ticker, comp.fundq  |
+| @@VARIABLE: companyid@@companyid         | 公司标识符                            | ciq.wrds_isin, ciq.wrds_cusip, ciq.wrds_ticker      |
+| @@VARIABLE: companyname@@companyname       | 公司名称                            |  ciq.wrds_isin, ciq.wrds_cusip, ciq.wrds_ticker      |
+| @@VARIABLE: datadate@@datadate   |  数据日期（季度）          | comp.fundq      |
+| @@VARIABLE: fyearq@@fyearq | 财务年度季度   | comp.fundq      |
+| @@VARIABLE: fqtr@@fqtr   | 财务季度   | comp.fundq      |
+
+*/
+
+/*
+表格二：计算得到的变量（由已知变量计算得来）
+| 名字           | 含义                    | 公式                                           |
+|----------------|-------------------------|------------------------------------------------|
+| @@VARIABLE: mqtr@@mqtr          | 季度标识符                  | mqtr = fyearq * 100 + fqtr * 25       |
+| @@VARIABLE: cnt_press@@cnt_press   |  季度新闻稿数量 | count(rp_entity_id), 按`gvkey`和`datadate`分组统计   |
+*/
+
+/*
+时间限制变量时间范围表
+| 变量名         | 时间范围                      |
+|--------------|-------------------------------|
+| rpna_date_utc   |  2010 ~ 2020                |
+| datadate      | '01JAN2010'd ~ '31DEC2020'd        |
+*/
+
+**** Note **** 
+
+This program linked Ravenpack press releases to GVKEY
+
+last revised date: 
+
+2020/11/16: change press releases items from 2004 to from 2000 then 2000-2003 have press releases from dow jones
+
+2020/11/10: from 2000 to 2019 previous 2000-2018
+
+2020/9/12: add css ... 
+
+2020/9/1: 
+remove any conditions based on entity name because entity_name in ravenpack seems to be the most recent entity name
+I remove the conditions made on 2020/8/31 because it doesn't consider the M&A (? if a acuiqred by b later then a's news before it was acquired will be under b's news)
+
+2020/8/31: 
+remove time constraint on rpna_date_utc when merging to gvkeys using isin/cusip
+
+input dataset:
+
+output datasets: 
+
+Note:
+I use 9 digit cusip. better use 6 digit cusips?
+
+;
+
+%let bgnyear=2010;
+%let endyear=2020;
+%let name=from2010to2020;
+******** -------- PART 1 BEGIN: get the press release data --------- ********;
+
+* - delete datasets;
+proc datasets library=work;
+	delete pr_eq_:;
+run;
+
+* - the macro program;
+
+* require relevance >=90;
+* don't require ens>0/=100, ens=. doesn't mean missing values, just can't detect the topic of the press release;
+    @@BEGIN VARIABLE: rpna_date_utc@@
+	@@BEGIN VARIABLE: rpna_time_utc@@
+	@@BEGIN VARIABLE: rp_entity_id@@
+    @@BEGIN VARIABLE: entity_name@@
+    @@BEGIN VARIABLE: country_code@@
+    @@BEGIN VARIABLE: topic@@
+    @@BEGIN VARIABLE: group@@
+    @@BEGIN VARIABLE: type@@
+    @@BEGIN VARIABLE: category@@
+    @@BEGIN VARIABLE: isin@@
+    @@BEGIN VARIABLE: rp_story_id@@
+    @@BEGIN VARIABLE: relevance@@
+    @@BEGIN VARIABLE: ens@@
+    @@BEGIN VARIABLE: ENS_KEY@@
+    @@BEGIN VARIABLE: source@@
+    @@BEGIN VARIABLE: css@@
+    @@BEGIN VARIABLE: nip@@
+    @@BEGIN VARIABLE: bam@@
+    @@BEGIN VARIABLE: peq@@
+    @@BEGIN VARIABLE: bca@@
+%let keepvars = rpna_date_utc rpna_time_utc rp_entity_id entity_name country_code topic group type category isin rp_story_id relevance ens ENS_KEY source css nip bam peq bca;
+		@@END VARIABLE: rpna_date_utc@@
+		@@END VARIABLE: rpna_time_utc@@
+        @@END VARIABLE: rp_entity_id@@
+        @@END VARIABLE: entity_name@@
+        @@END VARIABLE: country_code@@
+        @@END VARIABLE: topic@@
+        @@END VARIABLE: group@@
+        @@END VARIABLE: type@@
+        @@END VARIABLE: category@@
+        @@END VARIABLE: isin@@
+        @@END VARIABLE: rp_story_id@@
+        @@END VARIABLE: relevance@@
+        @@END VARIABLE: ens@@
+        @@END VARIABLE: ENS_KEY@@
+        @@END VARIABLE: source@@
+        @@END VARIABLE: css@@
+        @@END VARIABLE: nip@@
+        @@END VARIABLE: bam@@
+        @@END VARIABLE: peq@@
+        @@END VARIABLE: bca@@
+%let outputfile=pr_eq_all;
+
+%macro getrp(year);
+data pr_eq_&year;set rpna.pr_equities_&year;
+ if entity_type="COMP" and news_type="PRESS-RELEASE" and relevance>89; 
+ keep &keepvars;
+run;
+proc datasets;
+   append base=&outputfile
+   data=pr_eq_&year;
+run;
+%mend;
+
+%macro do_year(start_year,end_year);
+%DO year= &start_year %TO &end_year;
+ %getrp(&year);
+%END;
+%mend do_year;
+
+* - operate the macro program;
+%do_year(&bgnyear., &endyear.);
+
+
+**** ---- get dow jones press releass from the dow jones edition;
+
+* - delete datasets;
+proc datasets library=work;
+	delete dj_eq_:;
+run;
+%let outputfile=dj_eq_all;
+
+%macro getrp(year);
+data dj_eq_&year;set rpna.dj_equities_&year;
+ if entity_type="COMP" and news_type="PRESS-RELEASE" and relevance>89; 
+ keep &keepvars;
+run;
+proc datasets;
+   append base=&outputfile
+   data=dj_eq_&year;
+run;
+%mend;
+
+%macro do_year(start_year,end_year);
+%DO year= &start_year %TO &end_year;
+ %getrp(&year);
+%END;
+%mend do_year;
+
+* - operate the macro program, from 2004 because the press release edition starting from 2004;
+%do_year(&bgnyear., &endyear.);
+
+******** -------- PART 1 END: get the press release data --------- ********;
+
+
+
+******** -------- PART 2 BEGIN: merge with gvkeys --------- ********;
+
+** wrds_company_mapping (created from rp_company_mapping) is less complete than rp_company_mapping
+** e.g. bank one corp don't have record in wrds_company_mapping, but it has cusip and ticker in rp_company_mapping;
+
+** from rp_company_mapping get cusip and ticker information;
+
+** -- run the following codes for &outputfile, which can be pr_eq_all press releases from press releases edition or 
+**    dj_eq_all press releases from dow jones edition;
+        @@BEGIN VARIABLE: data_value@@
+	    @@BEGIN VARIABLE: range_start@@
+		@@BEGIN VARIABLE: range_end@@
+
+data mapping;set rpna.rp_company_mapping;
+	if entity_type="COMP";
+	where data_type='CUSIP' OR data_type='TICKER';
+	if range_end=. then range_end='30SEP2021'd; 
+run;
+		@@END VARIABLE: data_value@@
+		@@END VARIABLE: range_start@@
+		@@END VARIABLE: range_end@@
+
+**** ---- &outputfile map with cusip and ticker;
+
+%let outputfile=pr_eq_all;
+%let outputfile=dj_eq_all;
+
+%macro identifier(dsin);
+proc sql;
+	create table out1
+	as select distinct a.*,b.data_value as cusip
+	from &dsin a left join mapping(where=(data_type="CUSIP")) b
+	on a.rp_entity_id = b.rp_entity_id
+	and range_start<=a.rpna_date_utc<=range_end;
+	
+	create table out_&dsin
+	as select distinct a.*,b.data_value as ticker
+	from out1 a left join mapping(where=(data_type="TICKER")) b
+	on a.rp_entity_id = b.rp_entity_id
+	and range_start<=a.rpna_date_utc<=range_end;
+quit; 
+%mend;
+
+%identifier(pr_eq_all);
+%identifier(dj_eq_all);
+
+*38425329 PR;
+*11256970 DJ;
+
+**** ---- get gvkey-isin/cusip/ticker mapping;
+    @@BEGIN VARIABLE: companyid@@
+	@@BEGIN VARIABLE: companyname@@
+proc sql;
+	create table isin_gvkey
+	as select distinct a.*,b.gvkey
+	from ciq.wrds_isin a,ciq.wrds_gvkey b 
+	where a.companyid=b.companyid
+	and (b.startdate <= a.enddate or b.startdate = .B or a.enddate = .E) 
+	and (a.startdate <= b.enddate or a.startdate = .B or b.enddate = .E);
+
+	create table cusip_gvkey
+	as select distinct a.*,b.gvkey
+	from ciq.wrds_cusip a,ciq.wrds_gvkey b 
+	where a.companyid=b.companyid
+	and (b.startdate <= a.enddate or b.startdate = .B or a.enddate = .E) 
+	and (a.startdate <= b.enddate or a.startdate = .B or b.enddate = .E);
+
+	create table ticker_gvkey
+	as select distinct a.*,b.gvkey
+	from ciq.wrds_ticker a,ciq.wrds_gvkey b 
+	where a.companyid=b.companyid
+	and (b.startdate <= a.enddate or b.startdate = .B or a.enddate = .E) 
+	and (a.startdate <= b.enddate or a.startdate = .B or b.enddate = .E);
+quit;
+    @@END VARIABLE: companyid@@
+	@@END VARIABLE: companyname@@
+**** ---- the macro to merge with gvkey using cusip/isin/ticker;
+
+%MACRO rp_gvkeylink(inds,outds);
+/* for every rpna_date_utc, rp_entity_id,identifier pair, find the best matching gvkey */
+proc sql;
+	create table ds_isin (drop=startdate enddate companyid)
+	as select distinct a.*,b.*,
+	compged(a.entity_name,b.companyname,"ILN") as spelld,
+	(b.gvkey ne "") as gs
+	from &inds a, isin_gvkey b
+	where a.isin=b.isin 
+	and (b.startdate <= a.RPNA_DATE_UTC or b.startdate = .B) 
+	and (a.RPNA_DATE_UTC <= b.enddate or b.enddate = .E)
+	/*group by a.RPNA_DATE_UTC,a.rp_entity_id,a.isin
+	having calculated spelld=min(calculated spelld)*/
+	order by a.RPNA_DATE_UTC,a.rp_entity_id,a.rp_story_id,gvkey;
+
+	create table ds_cusip (drop=startdate enddate companyid)
+	as select distinct a.*,b.*,
+	compged(a.entity_name,b.companyname,"ILN") as spelld,
+	(b.gvkey ne "") as gc
+	from &inds a, cusip_gvkey b
+	where a.cusip=b.cusip
+	and (b.startdate <= a.RPNA_DATE_UTC or b.startdate = .B) 
+	and (a.RPNA_DATE_UTC <= b.enddate or b.enddate = .E)
+	/*group by a.RPNA_DATE_UTC,a.rp_entity_id,a.cusip
+	having calculated spelld=min(calculated spelld)*/
+	order by a.RPNA_DATE_UTC,a.rp_entity_id,a.rp_story_id,gvkey;
+
+	create table ds_ticker (drop=startdate enddate companyid)
+	as select distinct a.*,b.*,
+	compged(a.entity_name,b.companyname,"ILN") as spelld,
+	(b.gvkey ne "") as gt
+	from &inds a, ticker_gvkey b
+	where a.ticker=b.ticker
+	and (b.startdate <= a.RPNA_DATE_UTC or b.startdate = .B) 
+	and (a.RPNA_DATE_UTC <= b.enddate or b.enddate = .E)
+	/* add time constraint only for ticker */
+	/* group by a.RPNA_DATE_UTC,a.rp_entity_id,a.ticker
+	having calculated spelld=min(calculated spelld)*/
+	order by a.RPNA_DATE_UTC,a.rp_entity_id,a.rp_story_id,gvkey;
+quit;
+
+/* for every rpna_date_utc, rp_entity_id pair, find the best matching gvkey */
+
+data out1; 
+	merge ds_cusip ds_ticker ds_isin;
+	by RPNA_DATE_UTC rp_entity_id rp_story_id gvkey;
+run;
+proc sort nodupkey;by _all_;run;
+data out2;set out1;
+	if gt=. then gt=0;
+	if gc=. then gc=0;
+	if gs=. then gs=0;
+	gall=gt+gc+gs;
+run;
+
+proc sql;
+/* pick the gvkey that can be matched by all identifier if one unique obs has several gvkeys*/
+	create table out3
+	as select distinct *
+	from out2
+	group by RPNA_DATE_UTC, rp_entity_id, rp_story_id
+	having gall=max(gall);
+	
+/* if the results have the same gall, then pick the min gt: ticker matching is less accurate */
+	create table out4
+	as select distinct *
+	from out3
+	group by RPNA_DATE_UTC, rp_entity_id, rp_story_id
+	having gt=min(gt);
+quit;
+
+data &outds;set out4;drop isin cusip ticker;
+proc sort nodupkey;by _all_;run;
+
+%MEND;
+
+%rp_gvkeylink(out_pr_eq_all,pr_eq_all_gvkey); * 12795681;
+%rp_gvkeylink(out_dj_eq_all,dj_eq_allpr_gvkey);* 4988213;
+
+
+** rp_pr_all_gvkey(stands for ravenpack all press releases linked to gvkey) is the press releases from the dow jones edition and press releases edition from 2010-2018, merged with gvkeys;
+
+data rp_prdj_all_gvkey&name.;set pr_eq_all_gvkey dj_eq_allpr_gvkey;run;
+proc sort;by rpna_date_utc rp_entity_id;run;*17783894;
+
+
+******** -------- PART 2 END: merge with gvkeys --------- ********;
+
+******** -------- PART 3 BEGIN: merge with firm fiscal quarter sample and extract media atttention data  --------- ********;
+libname  vars "/home/yale/yiliwu/trial/vars_for_use"; 
+%let bgndate = 01JAN2010;
+%let enddate = 31DEC2020;
+		@@BEGIN VARIABLE: fyearq@@
+		@@BEGIN VARIABLE: fqtr@@
+		@@BEGIN VARIABLE: mqtr@@
+data comp;
+set comp.fundq;
+where indfmt='INDL' and datafmt='STD' and consol='C' and popsrc='D'
+  and datadate>="&bgndate."d and datadate<="&enddate."d;
+if missing(gvkey) then delete;
+if missing(fyearq) then delete;
+mqtr=fyearq*100+fqtr*25;
+keep gvkey datadate mqtr fyearq fqtr;
+run;
+		@@END VARIABLE: fyearq@@
+        @@END VARIABLE: fqtr@@
+		@@END VARIABLE: mqtr@@
+proc sort data =comp nodupkey;by gvkey  datadate;run;
+
+* merge with press releases data;
+proc sql;
+	create table ds1 
+	as select unique a.*, b.rpna_date_utc,b.rp_entity_id
+	from comp as  a right join rp_pr_all_gvkey&name. as b
+	where a.gvkey=b.gvkey and  intnx('month',a.datadate,-3,'e')<b.rpna_date_utc<= a.datadate;
+quit; 
+data ds1;
+set ds1;
+if missing(datadate) then delete;
+run;
+proc sql;
+	@@BEGIN VARIABLE: cnt_press@@
+create table ds2 as select unique gvkey, datadate, count(rp_entity_id) as cnt_press
+from ds1 
+group by gvkey, datadate;
+quit;
+	@@END VARIABLE: cnt_press@@
+data vars.qcnt_press&name.;
+set ds2;
+run;
+******** -------- PART 3 END:extract media atttention data --------- ********;

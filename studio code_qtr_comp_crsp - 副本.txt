@@ -1,0 +1,579 @@
+/*
+这段代码的主要功能是从 Compustat、CRSP 和 TAQ 数据库中提取、处理和合并季度财务数据、股票市场数据以及高频交易数据，
+计算季度级别的市场微观结构变量、股票收益率相关变量，以及不同时间窗口的 beta 值。
+最终，它将结果合并并导出到 CSV 文件中，用于后续的量化分析。
+*/
+
+/*
+表格一：已知变量（直接引自数据库）
+| 变量名            | 含义                                      | 数据库                                               |
+|-------------------|-------------------------------------------|----------------------------------------------------|
+| @@VARIABLE: gvkey@@gvkey          | 公司标识符                                | comp.fundq, crsp.ccmxpf_lnkhist |
+| @@VARIABLE: datadate@@datadate       | 数据日期                                  | comp.fundq, crsp.ccmxpf_lnkhist        |
+| @@VARIABLE: fyearq@@fyearq          | 财务年度季度                              | comp.fundq                             |
+| @@VARIABLE: fqtr@@fqtr            | 财务季度                                 | comp.fundq                             |
+| @@VARIABLE: permno@@permno           | CRSP 证券标识符                           | crsp.ccmxpf_lnkhist, srca.wrds_taqms_iid|
+| @@VARIABLE: permco@@permco           | CRSP 公司标识符                          | crsp.ccmxpf_lnkhist             |
+| @@VARIABLE: date@@date              | 股票数据日期                              | crsp.msf, srca.wrds_taqms_iid                |
+| @@VARIABLE: exchcd@@exchcd            | 交易所代码                           | crsp.msf          |
+| @@VARIABLE: vwretd@@vwretd            | 市值加权市场收益率                        | crsp.msi            |
+| @@VARIABLE: ewretd@@ewretd           | 等权重市场收益率                          | crsp.msi           |
+| @@VARIABLE: sprtrn@@sprtrn           | S&P 500 收益率                           | crsp.msi           |
+| @@VARIABLE: sym_root@@sym_root   | TAQ 股票代码                              | srca.wrds_taqms_iid               |
+| @@VARIABLE: BestOfrDepth_Dollar_tw@@BestOfrDepth_Dollar_tw | TAQ 最佳卖出深度（美元）       | srca.wrds_taqms_iid  |
+| @@VARIABLE: BestBidDepth_Dollar_tw@@BestBidDepth_Dollar_tw   | TAQ 最佳买入深度（美元）     | srca.wrds_taqms_iid |
+| @@VARIABLE: BestOfrDepth_Share_tw@@BestOfrDepth_Share_tw  | TAQ 最佳卖出深度（股）      | srca.wrds_taqms_iid |
+| @@VARIABLE: BestBidDepth_Share_tw@@BestBidDepth_Share_tw  | TAQ 最佳买入深度（股）     | srca.wrds_taqms_iid |
+| @@VARIABLE: EffectiveSpread_Percent_Ave@@EffectiveSpread_Percent_Ave | TAQ 平均有效价差（百分比）  | srca.wrds_taqms_iid  |
+| @@VARIABLE: EffectiveSpread_Percent_DW@@EffectiveSpread_Percent_DW  | TAQ 美元加权有效价差（百分比）  | srca.wrds_taqms_iid  |
+| @@VARIABLE: EffectiveSpread_Percent_SW@@EffectiveSpread_Percent_SW  | TAQ 股票加权有效价差（百分比） | srca.wrds_taqms_iid  |
+| @@VARIABLE: DollarPriceImpact_LR_Ave@@DollarPriceImpact_LR_Ave  | TAQ 平均美元价格冲击       | srca.wrds_taqms_iid  |
+| @@VARIABLE: DollarPriceImpact_LR_DW@@DollarPriceImpact_LR_DW | TAQ 美元加权美元价格冲击   | srca.wrds_taqms_iid  |
+| @@VARIABLE: DollarPriceImpact_LR_SW@@DollarPriceImpact_LR_SW  | TAQ 股票加权美元价格冲击     | srca.wrds_taqms_iid   |
+| @@VARIABLE: PercentPriceImpact_LR_Ave@@PercentPriceImpact_LR_Ave  | TAQ 平均百分比价格冲击   | srca.wrds_taqms_iid  |
+| @@VARIABLE: PercentPriceImpact_LR_DW@@PercentPriceImpact_LR_DW | TAQ 美元加权百分比价格冲击 | srca.wrds_taqms_iid  |
+| @@VARIABLE: PercentPriceImpact_LR_SW@@PercentPriceImpact_LR_SW | TAQ 股票加权百分比价格冲击  | srca.wrds_taqms_iid  |
+ | @@VARIABLE:  shrout@@shrout    |   流通股数     |   crsp.msf |
+| @@VARIABLE:  prc@@prc      | 股票价格      |  crsp.msf |
+| @@VARIABLE: vol@@vol    |   股票交易量   |    crsp.msf |
+| @@VARIABLE: ret@@ret   | 股票收益率      | crsp.msf  |
+
+表格二：计算得到的变量（由已知变量计算得来）
+| 变量名                | 含义                               | 公式                                                       |
+|-----------------------|------------------------------------|------------------------------------------------------------|
+| @@VARIABLE: mqtr@@mqtr               | 季度标识符                            | `mqtr = fyearq*100+fqtr*25`                                      |
+| @@VARIABLE: datadate_l1@@datadate_l1      | 滞后 3 个月的数据日期                  |  `intnx('month',datadate,-3,'e')`                                         |
+| @@VARIABLE: datadate_l2@@datadate_l2      | 滞后 6 个月的数据日期                  |`intnx('month',datadate,-6,'e')`                                           |
+| @@VARIABLE: datadate_l4@@datadate_l4     | 滞后 12 个月的数据日期                 | `intnx('month',datadate,-12,'e')`                                          |
+| @@VARIABLE: d_depth_val@@d_depth_val      | TAQ 买卖深度（美元）              | `BestOfrDepth_Dollar_tw+BestBidDepth_Dollar_tw`                         |
+| @@VARIABLE: d_depth_shr@@d_depth_shr      | TAQ 买卖深度（股）                | `BestOfrDepth_Share_tw+BestBidDepth_Share_tw`                        |
+| @@VARIABLE: d_espdp_aw@@d_espdp_aw       | TAQ 平均有效价差(百分比)                  | `EffectiveSpread_Percent_Ave`                                                |
+| @@VARIABLE: d_espdp_dw@@d_espdp_dw       | TAQ 美元加权有效价差(百分比)              | `EffectiveSpread_Percent_DW`                                                     |
+| @@VARIABLE: d_espdp_sw@@d_espdp_sw      | TAQ 股票加权有效价差(百分比)            | `EffectiveSpread_Percent_SW`                                                   |
+| @@VARIABLE: d_pcimpt_valaw@@d_pcimpt_valaw   | TAQ 平均美元价格冲击     | `DollarPriceImpact_LR_Ave`                                                |
+| @@VARIABLE: d_pcimpt_valdw@@d_pcimpt_valdw  | TAQ 美元加权美元价格冲击         | `DollarPriceImpact_LR_DW`                                                        |
+| @@VARIABLE: d_pcimpt_valsw@@d_pcimpt_valsw  | TAQ 股票加权美元价格冲击      | `DollarPriceImpact_LR_SW`                                                     |
+| @@VARIABLE: d_pcimpt_peraw@@d_pcimpt_peraw  | TAQ 平均百分比价格冲击        |`PercentPriceImpact_LR_Ave`                                                  |
+| @@VARIABLE: d_pcimpt_perdw@@d_pcimpt_perdw | TAQ 美元加权百分比价格冲击    | `PercentPriceImpact_LR_DW`                                                       |
+| @@VARIABLE: d_pcimpt_persw@@d_pcimpt_persw | TAQ 股票加权百分比价格冲击      |  `PercentPriceImpact_LR_SW`                                                    |
+| @@VARIABLE: me_crsp@@me_crsp    | 公司总市值（来自CRSP）                  |   sum(ME) group by permco,date                                             |
+| @@VARIABLE: depth_dqtr_val@@depth_dqtr_val   | TAQ 季度平均买卖深度（美元）            |   avg(d_depth_val) group by gvkey, datadate                            |
+| @@VARIABLE: depth_dqtr_shr@@depth_dqtr_shr   | TAQ 季度平均买卖深度（股）            |  avg(d_depth_shr) group by gvkey, datadate                            |
+| @@VARIABLE: espdp_dqtr_aw@@espdp_dqtr_aw   | TAQ 季度平均有效价差（百分比）         | avg(d_espdp_aw) group by gvkey, datadate                                         |
+| @@VARIABLE: espdp_dqtr_dw@@espdp_dqtr_dw  | TAQ 季度平均美元加权有效价差（百分比）     | avg(d_espdp_dw) group by gvkey, datadate                                   |
+| @@VARIABLE: espdp_dqtr_sw@@espdp_dqtr_sw    | TAQ 季度平均股票加权有效价差（百分比）  | avg(d_espdp_sw) group by gvkey, datadate                                    |
+| @@VARIABLE: pcimpt_dqtr_valaw@@pcimpt_dqtr_valaw | TAQ 季度平均美元价格冲击       | avg(d_pcimpt_valaw) group by gvkey, datadate                                        |
+| @@VARIABLE: pcimpt_dqtr_valdw@@pcimpt_dqtr_valdw | TAQ 季度平均美元加权美元价格冲击      | avg(d_pcimpt_valdw) group by gvkey, datadate                                       |
+| @@VARIABLE: pcimpt_dqtr_valsw@@pcimpt_dqtr_valsw | TAQ 季度平均股票加权美元价格冲击    | avg(d_pcimpt_valsw) group by gvkey, datadate                                       |
+| @@VARIABLE: pcimpt_dqtr_peraw@@pcimpt_dqtr_peraw  | TAQ 季度平均百分比价格冲击    |   avg(d_pcimpt_peraw) group by gvkey, datadate                                         |
+| @@VARIABLE: pcimpt_dqtr_perdw@@pcimpt_dqtr_perdw  | TAQ 季度平均美元加权百分比价格冲击    |   avg(d_pcimpt_perdw) group by gvkey, datadate                                       |
+| @@VARIABLE: pcimpt_dqtr_persw@@pcimpt_dqtr_persw   | TAQ 季度平均股票加权百分比价格冲击     |  avg(d_pcimpt_persw) group by gvkey, datadate                                     |
+| @@VARIABLE: ami_dqtr@@ami_dqtr    | CRSP 季度平均Amihud Illiquidity                | avg(ami_d) group by gvkey, datadate                                          |
+| @@VARIABLE: turn_dqtr@@turn_dqtr    | CRSP 季度平均换手率                         | avg(turn_d) group by gvkey, datadate                                          |
+| @@VARIABLE: stdret_dqtr@@stdret_dqtr  | CRSP 季度收益率标准差                       | std(ret_d) group by gvkey, datadate                                       |
+| @@VARIABLE: vmkt_beta3@@vmkt_beta3      |  3 个月市场模型beta                      |   ret_d=ret_vmkt                                          |
+| @@VARIABLE: emkt_beta3@@emkt_beta3      |   3 个月等权重市场模型beta                    | ret_d=ret_emkt                                          |
+| @@VARIABLE: msp5_beta3@@msp5_beta3     | 3 个月 S&P 500  模型beta                   | ret_d=ret_msp5                                         |
+| @@VARIABLE: vmkt_beta6@@vmkt_beta6   |  6 个月市场模型beta                   |  ret_d=ret_vmkt                                        |
+| @@VARIABLE: emkt_beta6@@emkt_beta6   | 6 个月等权重市场模型beta                      |  ret_d=ret_emkt                                         |
+| @@VARIABLE: msp5_beta6@@msp5_beta6    | 6 个月 S&P 500 模型beta                 | ret_d=ret_msp5                                           |
+| @@VARIABLE: vmkt_beta12@@vmkt_beta12     |  12个月市场模型beta                    |  ret_d=ret_vmkt                                      |
+| @@VARIABLE: emkt_beta12@@emkt_beta12    |  12个月等权重市场模型beta                     |  ret_d=ret_emkt                                       |
+| @@VARIABLE: msp5_beta12@@msp5_beta12     | 12个月 S&P 500 模型beta                  | ret_d=ret_msp5                                      |
+| @@VARIABLE: turn_mqtr@@turn_mqtr      | 季度平均换手率                            |   avg(turn_m) group by gvkey, datadate                                        |
+| @@VARIABLE: cret_datadate@@cret_datadate | 股票当日累积收益率                         | from proc expand                                  |
+| @@VARIABLE: cret_vmkt_datadate@@cret_vmkt_datadate | 市场当日累积收益率(市值加权)                         | from proc expand                                  |
+| @@VARIABLE: cret_emkt_datadate@@cret_emkt_datadate  |  市场当日累积收益率(等权重)                       | from proc expand                                   |
+| @@VARIABLE: cret_msp5_datadate@@cret_msp5_datadate   |  S&P500 当日累积收益率                     | from proc expand                                  |
+| @@VARIABLE: cret_datadate_l1@@cret_datadate_l1    | 股票滞后 3 个月累积收益率                         | from proc expand                                   |
+| @@VARIABLE: cret_vmkt_datadate_l1@@cret_vmkt_datadate_l1 | 市场滞后 3 个月累积收益率(市值加权)                          | from proc expand                                 |
+| @@VARIABLE: cret_emkt_datadate_l1@@cret_emkt_datadate_l1  | 市场滞后 3 个月累积收益率(等权重)                        | from proc expand                                   |
+| @@VARIABLE: cret_msp5_datadate_l1@@cret_msp5_datadate_l1   | S&P500 滞后 3 个月累积收益率                     | from proc expand                                  |
+| @@VARIABLE: cret_datadate_l2@@cret_datadate_l2    | 股票滞后 6 个月累积收益率                          | from proc expand                                   |
+| @@VARIABLE: cret_vmkt_datadate_l2@@cret_vmkt_datadate_l2 | 市场滞后 6 个月累积收益率(市值加权)                          | from proc expand                                  |
+| @@VARIABLE: cret_emkt_datadate_l2@@cret_emkt_datadate_l2  | 市场滞后 6 个月累积收益率(等权重)                       | from proc expand                                  |
+| @@VARIABLE: cret_msp5_datadate_l2@@cret_msp5_datadate_l2  | S&P500 滞后 6 个月累积收益率                         | from proc expand                                  |
+| @@VARIABLE: cret_datadate_l4@@cret_datadate_l4    | 股票滞后 12 个月累积收益率                        | from proc expand                                   |
+| @@VARIABLE: cret_vmkt_datadate_l4@@cret_vmkt_datadate_l4  | 市场滞后 12 个月累积收益率(市值加权)                          | from proc expand                                  |
+| @@VARIABLE: cret_emkt_datadate_l4@@cret_emkt_datadate_l4   | 市场滞后 12 个月累积收益率(等权重)                          | from proc expand                                  |
+| @@VARIABLE: cret_msp5_datadate_l4@@cret_msp5_datadate_l4  | S&P500 滞后 12 个月累积收益率                        | from proc expand                                  |
+| @@VARIABLE: mret3@@mret3    | 3 个月股票累积收益率    | (cret_datadate+1)/(cret_datadate_l1+1)-1                       |
+| @@VARIABLE: mret6@@mret6     |  6 个月股票累积收益率                   | (cret_datadate+1)/(cret_datadate_l2+1)-1                      |
+| @@VARIABLE: mret12@@mret12   | 12个月股票累积收益率                   | (cret_datadate+1)/(cret_datadate_l4+1)-1                     |
+| @@VARIABLE: ret3_vmkt@@ret3_vmkt  |   3 个月市场累积收益率(市值加权)                    |  (cret_vmkt_datadate+1)/(cret_vmkt_datadate_l1+1)-1                     |
+| @@VARIABLE: ret6_vmkt@@ret6_vmkt   |   6 个月市场累积收益率(市值加权)                     | (cret_vmkt_datadate+1)/(cret_vmkt_datadate_l2+1)-1                      |
+| @@VARIABLE: ret12_vmkt@@ret12_vmkt  | 12 个月市场累积收益率(市值加权)                   |  (cret_vmkt_datadate+1)/(cret_vmkt_datadate_l4+1)-1                      |
+| @@VARIABLE: ret3_emkt@@ret3_emkt  |   3 个月市场累积收益率(等权重)                      |   (cret_emkt_datadate+1)/(cret_emkt_datadate_l1+1)-1                      |
+| @@VARIABLE: ret6_emkt@@ret6_emkt   | 6 个月市场累积收益率(等权重)                     | (cret_emkt_datadate+1)/(cret_emkt_datadate_l2+1)-1                       |
+| @@VARIABLE: ret12_emkt@@ret12_emkt  |  12 个月市场累积收益率(等权重)                     |  (cret_emkt_datadate+1)/(cret_emkt_datadate_l4+1)-1                      |
+| @@VARIABLE: ret3_msp5@@ret3_msp5   |  3 个月 S&P 500 累积收益率                   |  (cret_msp5_datadate+1)/(cret_msp5_datadate_l1+1)-1                        |
+| @@VARIABLE: ret6_msp5@@ret6_msp5  | 6 个月 S&P 500  累积收益率                 | (cret_msp5_datadate+1)/(cret_msp5_datadate_l2+1)-1                        |
+| @@VARIABLE: ret12_msp5@@ret12_msp5  |  12 个月 S&P 500 累积收益率                 |  (cret_msp5_datadate+1)/(cret_msp5_datadate_l4+1)-1                         |
+| @@VARIABLE: mret3_vmkt@@mret3_vmkt     | 3个月调整后股票累积收益率(市值加权)      | mret3-ret3_vmkt                                        |
+| @@VARIABLE: mret6_vmkt@@mret6_vmkt   |  6个月调整后股票累积收益率(市值加权)       |mret6-ret6_vmkt                                       |
+| @@VARIABLE: mret12_vmkt@@mret12_vmkt    | 12个月调整后股票累积收益率(市值加权)     |mret12-ret12_vmkt                                        |
+| @@VARIABLE: mret3_emkt@@mret3_emkt    |  3个月调整后股票累积收益率(等权重)       | mret3-ret3_emkt                                           |
+| @@VARIABLE: mret6_emkt@@mret6_emkt   | 6个月调整后股票累积收益率(等权重)         | mret6-ret6_emkt                                          |
+| @@VARIABLE: mret12_emkt@@mret12_emkt    | 12个月调整后股票累积收益率(等权重)      | mret12-ret12_emkt                                          |
+| @@VARIABLE: mret3_msp5@@mret3_msp5   |   3个月调整后股票累积收益率(S&P500)                    | mret3-ret3_msp5                                       |
+| @@VARIABLE: mret6_msp5@@mret6_msp5   |  6个月调整后股票累积收益率(S&P500)                       |  mret6-ret6_msp5                                          |
+| @@VARIABLE: mret12_msp5@@mret12_msp5    | 12个月调整后股票累积收益率(S&P500)                   | mret12-ret12_msp5                                          |
+| @@VARIABLE: lnprc@@lnprc     |  股票价格的对数                            |  log(abs(prc))                                     |
+
+时间范围：
+| 变量名     | 时间范围           |
+|------------|-------------------------|
+|  comp.fundq   | 2010-2020    |
+| crsp.msf,crsp.msi  | 2010-2020 |
+| srca.wrds_taqms_iid |  2013-2024 |
+*/
+libname output "/home/yale/min_zheng/output";
+%let uni_begdt = 01JAN2010;
+%let uni_enddt = 31DEC2020;
+/*********************Part One: merge with permno, exchg_comp, exchg_crsp***************************************/
+data comp;
+ set comp.fundq;
+  where "&uni_begdt"d<=datadate<="&uni_enddt"d 
+  and indfmt='INDL' and datafmt='STD' and popsrc='D' and consol='C';
+   @@BEGIN VARIABLE: mqtr@@ mqtr=fyearq*100+fqtr*25;@@END VARIABLE: mqtr@@
+  if missing(gvkey) then delete;
+  if missing(datadate) then delete;
+  if missing(fqtr) then delete;
+  exch_comp=exchg;
+  keep gvkey datadate fyearq fqtr mqtr;
+run;
+proc sort data=comp nodupkey;
+by gvkey datadate;
+run;
+proc sort data=comp nodupkey;
+by gvkey fyearq fqtr;
+run;
+proc sql;
+  create table comp_crsp
+  as select a.*, b.lpermno as permno, b.lpermco as permco
+  from comp as a, crsp.ccmxpf_lnkhist as b
+  where a.gvkey=b.gvkey and b.linkprim in ('P', 'C') and
+  b.LINKTYPE in ('LU', 'LC') and
+ (b.LINKDT <= a.datadate or missing(b.LINKDT)) and (a.datadate <= b.LINKENDDT or missing(b.LINKENDDT))
+ order by gvkey, datadate;
+quit;
+data comp_crsp;
+set comp_crsp;
+if missing(permno) then delete;
+run;
+proc sort data=comp_crsp nodupkey;
+by permno datadate;
+run;
+data base;
+set comp_crsp;
+@@BEGIN VARIABLE: datadate_l1@@datadate_l1=intnx('month',datadate,-3,'e');@@END VARIABLE: datadate_l1@@
+@@BEGIN VARIABLE: datadate_l2@@datadate_l2=intnx('month',datadate,-6,'e');@@END VARIABLE: datadate_l2@@
+@@BEGIN VARIABLE: datadate_l4@@datadate_l4=intnx('month',datadate,-12,'e');@@END VARIABLE: datadate_l4@@
+format datadate_l1 datadate_l2 datadate_l4 mmddyy10.; 
+keep gvkey permno datadate datadate_l1 datadate_l2 datadate_l4;
+run;
+/*********************Part Two: Processing TAQ variables***************************************/
+libname srca "/wrds/nyse/sasdata/wrds_taqms_iid";
+%let taq_begdt = 2014;
+%let taq_enddt = 2024;
+%let count="&taq_enddt"-"&taq_begdt"+1;
+data taqvar_d;
+set srca.wrds_iid_2013;
+@@BEGIN VARIABLE: d_depth_val@@d_depth_val=BestOfrDepth_Dollar_tw+BestBidDepth_Dollar_tw;@@END VARIABLE: d_depth_val@@
+@@BEGIN VARIABLE: d_depth_shr@@d_depth_shr=BestOfrDepth_Share_tw+BestBidDepth_Share_tw;@@END VARIABLE: d_depth_shr@@
+@@BEGIN VARIABLE: d_espdp_aw@@d_espdp_aw=EffectiveSpread_Percent_Ave;@@END VARIABLE: d_espdp_aw@@
+@@BEGIN VARIABLE: d_espdp_dw@@d_espdp_dw=EffectiveSpread_Percent_DW;@@END VARIABLE: d_espdp_dw@@
+@@BEGIN VARIABLE: d_espdp_sw@@d_espdp_sw=EffectiveSpread_Percent_SW;@@END VARIABLE: d_espdp_sw@@
+@@BEGIN VARIABLE: d_pcimpt_valaw@@d_pcimpt_valaw=DollarPriceImpact_LR_Ave;@@END VARIABLE: d_pcimpt_valaw@@
+@@BEGIN VARIABLE: d_pcimpt_valdw@@d_pcimpt_valdw=DollarPriceImpact_LR_DW;@@END VARIABLE: d_pcimpt_valdw@@
+@@BEGIN VARIABLE: d_pcimpt_valsw@@d_pcimpt_valsw=DollarPriceImpact_LR_SW;@@END VARIABLE: d_pcimpt_valsw@@
+@@BEGIN VARIABLE: d_pcimpt_peraw@@d_pcimpt_peraw=PercentPriceImpact_LR_Ave;@@END VARIABLE: d_pcimpt_peraw@@
+@@BEGIN VARIABLE: d_pcimpt_perdw@@d_pcimpt_perdw=PercentPriceImpact_LR_DW;@@END VARIABLE: d_pcimpt_perdw@@
+@@BEGIN VARIABLE: d_pcimpt_persw@@d_pcimpt_persw=PercentPriceImpact_LR_SW;@@END VARIABLE: d_pcimpt_persw@@
+keep sym_root date d_depth_val d_depth_shr d_espdp_aw d_espdp_dw d_espdp_sw
+d_pcimpt_valaw d_pcimpt_valdw d_pcimpt_valsw d_pcimpt_peraw d_pcimpt_perdw d_pcimpt_persw;
+run;
+data filelist;
+do i=1 to &count;
+num="&taq_begdt"+i-1;
+num_string=input(num,$16.);
+output;
+end;
+run;
+proc sql noprint;
+select scan(num_string,1,';'),count(num) into: filenames separated by ';',:n
+from filelist;
+quit;
+%macro function;
+  %do i=1 %to &n;
+  %let mark=%lowcase(%scan(&filenames,&i,";"));
+data s1;
+set srca.wrds_iid_&mark.;
+d_depth_val=BestOfrDepth_Dollar_tw+BestBidDepth_Dollar_tw;
+d_depth_shr=BestOfrDepth_Share_tw+BestBidDepth_Share_tw;
+d_espdp_aw=EffectiveSpread_Percent_Ave;
+d_espdp_dw=EffectiveSpread_Percent_DW;
+d_espdp_sw=EffectiveSpread_Percent_SW;
+d_pcimpt_valaw=DollarPriceImpact_LR_Ave;
+d_pcimpt_valdw=DollarPriceImpact_LR_DW;
+d_pcimpt_valsw=DollarPriceImpact_LR_SW;
+d_pcimpt_peraw=PercentPriceImpact_LR_Ave;
+d_pcimpt_perdw=PercentPriceImpact_LR_DW;
+d_pcimpt_persw=PercentPriceImpact_LR_SW;
+keep sym_root date d_depth_val d_depth_shr d_espdp_aw d_espdp_dw d_espdp_sw
+d_pcimpt_valaw d_pcimpt_valdw d_pcimpt_valsw d_pcimpt_peraw d_pcimpt_perdw d_pcimpt_persw;
+run;
+data taqvar_d;
+set taqvar_d s1;
+run;
+%end;
+%mend;
+%function;
+proc sql;
+create table taqvar_d as select a.*, b.permno
+from taqvar_d as a left join wrdsapps.taqmclink as b
+on a.sym_root=b.sym_root and a.date=b.date;
+quit;
+data taqvar_d;
+set taqvar_d;
+if missing(permno) then delete;
+run;
+proc sort data=taqvar_d nodupkey;
+by permno date;
+run;
+proc sql;
+create table tpvar1 as select unique a.*, b.gvkey, datadate
+from taqvar_d as a left join base as b
+on a.permno=b.permno and a.date<=b.datadate and a.date>b.datadate_l1;
+quit;
+data tpvar1;
+set tpvar1;
+if missing(gvkey) then delete;
+if missing(datadate) then delete;
+run;
+proc sort data=tpvar1 nodupkey;
+by gvkey datadate date;
+run;
+proc sql;
+create table tpvar2 as select gvkey, datadate, count(date) as cnt
+               , avg(d_depth_val) as 
+@@BEGIN VARIABLE: depth_dqtr_val@@depth_dqtr_val, @@END VARIABLE: depth_dqtr_val@@
+avg(d_depth_shr) as 
+@@BEGIN VARIABLE: depth_dqtr_shr@@depth_dqtr_shr, @@END VARIABLE: depth_dqtr_shr@@
+               , avg(d_espdp_aw) as 
+@@BEGIN VARIABLE: espdp_dqtr_aw@@espdp_dqtr_aw, @@END VARIABLE: espdp_dqtr_aw@@
+avg(d_espdp_dw) as 
+@@BEGIN VARIABLE: espdp_dqtr_dw@@espdp_dqtr_dw, @@END VARIABLE: espdp_dqtr_dw@@
+avg(d_espdp_sw) as 
+@@BEGIN VARIABLE: espdp_dqtr_sw@@espdp_dqtr_sw, @@END VARIABLE: espdp_dqtr_sw@@
+               , avg(d_pcimpt_valaw) as 
+@@BEGIN VARIABLE: pcimpt_dqtr_valaw@@pcimpt_dqtr_valaw, @@END VARIABLE: pcimpt_dqtr_valaw@@
+avg(d_pcimpt_valdw) as 
+@@BEGIN VARIABLE: pcimpt_dqtr_valdw@@pcimpt_dqtr_valdw, @@END VARIABLE: pcimpt_dqtr_valdw@@
+               , avg(d_pcimpt_valsw) as 
+@@BEGIN VARIABLE: pcimpt_dqtr_valsw@@pcimpt_dqtr_valsw, @@END VARIABLE: pcimpt_dqtr_valsw@@
+avg(d_pcimpt_peraw) as 
+@@BEGIN VARIABLE: pcimpt_dqtr_peraw@@pcimpt_dqtr_peraw, @@END VARIABLE: pcimpt_dqtr_peraw@@
+               , avg(d_pcimpt_perdw) as 
+@@BEGIN VARIABLE: pcimpt_dqtr_perdw@@pcimpt_dqtr_perdw, @@END VARIABLE: pcimpt_dqtr_perdw@@
+avg(d_pcimpt_persw) as 
+@@BEGIN VARIABLE: pcimpt_dqtr_persw@@pcimpt_dqtr_persw
+@@END VARIABLE: pcimpt_dqtr_persw@@
+			   from tpvar1
+			   group by gvkey, datadate;
+			   quit;
+data dqtr_taq;
+set tpvar2;
+if cnt>=30;
+drop cnt;
+run;
+proc sort data=dqtr_taq nodupkey;
+by gvkey datadate;
+run;
+proc sql;
+drop table tpvar1, tpvar2, taqvar_d, s1,filelist ;
+quit; 
+/***************************Part Three: CRSP daily liquidity (dqtr_crsp1)********************************/
+%let dsevars=shrcd exchcd;                    /*CRSP event file variables           */
+%let dsfvars = vol ret shrout prc; /*CRSP stock file variables           */
+%let exch_filter=(1=1);
+%let stocks_filter=(1=1);
+%CrspMerge(s=d,start=&uni_begdt,end=&uni_enddt,sfvars=&dsfvars,sevars=&dsevars,filters=&exch_filter and &stocks_filter);
+%CrspMerge(s=m,start=&uni_begdt,end=&uni_enddt,sfvars=&dsfvars,sevars=&dsevars,filters=&exch_filter and &stocks_filter);
+proc sql;
+create table crsp_d as select a.*, b.vwretd as ret_vmkt, b.ewretd as ret_emkt, b.sprtrn as ret_msp5
+from crsp_d  as a left join crsp.msi as b
+on a.date=b.date;
+quit;
+data crsp_d;
+set crsp_d;
+if abs(vol*prc)>0 then 
+@@BEGIN VARIABLE: ami_d@@ami_d=abs(1000000*ret/(VOL*prc));@@END VARIABLE: ami_d@@
+@@BEGIN VARIABLE: turn_d@@turn_d=vol/(shrout*1000);@@END VARIABLE: turn_d@@
+@@BEGIN VARIABLE: ret_d@@ret_d=ret*1;@@END VARIABLE: ret_d@@
+run;
+data crsp_d;
+set crsp_d;
+if missing(ret_d) then delete;
+if exchcd=3 then  turn_d=(date <='01jan1997'd)*0.5*turn_d+(date>'01jan1997'd)*0.62*turn_d;
+run;
+proc sql;
+create table tpvar1 as select unique a.*, b.gvkey, b.datadate
+from crsp_d as a left join base as b
+on a.permno=b.permno and a.date<=b.datadate and a.date>b.datadate_l1;
+quit;
+data tpvar1;
+set tpvar1;
+if missing(gvkey) then delete;
+if missing(datadate) then delete;
+run;
+proc sort data=tpvar1 nodupkey;
+by gvkey datadate date;
+run;
+proc sql  undo_policy=none;
+create table tpvar1
+as select *, count(date) as cnt
+from tpvar1
+group by gvkey, datadate
+order by gvkey, datadate, date;
+quit;
+data tpvar1;
+set tpvar1;
+if cnt>30;
+run;
+proc sql;
+create table dqtr_crsp1 as select unique  gvkey, datadate, avg(ami_d) as 
+@@BEGIN VARIABLE: ami_dqtr@@ami_dqtr, @@END VARIABLE: ami_dqtr@@
+avg(turn_d) as 
+@@BEGIN VARIABLE: turn_dqtr@@turn_dqtr, @@END VARIABLE: turn_dqtr@@
+std(ret_d) as 
+@@BEGIN VARIABLE: stdret_dqtr@@stdret_dqtr
+@@END VARIABLE: stdret_dqtr@@
+from tpvar1
+group by gvkey, datadate;
+quit;
+proc sort data=dqtr_crsp1 nodupkey;
+by gvkey datadate;
+run;
+proc sql;
+drop table tpvar1;
+quit;
+/***********Part Four: calculate different measures of beta **********/
+%macro beta(intable=, mark=, begdt=, criteria=);
+data tpvar1;
+set &intable;
+keep gvkey datadate permno &begdt.;
+run;
+proc sql;
+create table tpvar2 as select unique a.*, b.date, b.ret_d, b.ret_vmkt, b.ret_emkt, b.ret_msp5
+from tpvar1 as a left join crsp_d as b
+on a.permno=b.permno and a.datadate>=b.date and a.&begdt.<b.date;
+quit;
+proc sql  undo_policy=none;
+create table tpvar2
+as select *, count(date) as cnt
+from tpvar2
+group by gvkey, datadate
+order by gvkey, datadate, date;
+quit;
+data tpvar2;
+set tpvar2;
+if cnt<&criteria. then delete;
+run;
+proc reg data=tpvar2 outest=vmkt_&mark. noprint;
+by gvkey datadate;
+model ret_d=ret_vmkt;
+run;
+data vmkt_&mark.;
+set vmkt_&mark.;
+@@BEGIN VARIABLE: vmkt_beta3@@vmkt_&mark.=ret_vmkt;@@END VARIABLE: vmkt_beta3@@
+keep gvkey datadate  vmkt_&mark.;
+run;
+proc sort data=vmkt_&mark. nodupkey;
+by gvkey datadate;
+run;
+proc reg data=tpvar2 outest=emkt_&mark. noprint;
+by gvkey datadate;
+model ret_d=ret_emkt;
+run;
+data emkt_&mark.;
+set emkt_&mark.;
+@@BEGIN VARIABLE: emkt_beta3@@emkt_&mark.=ret_emkt;@@END VARIABLE: emkt_beta3@@
+keep gvkey datadate  emkt_&mark.;
+run;
+proc sort data=emkt_&mark. nodupkey;
+by gvkey datadate;
+run;
+proc reg data=tpvar2 outest=msp5_&mark. noprint;
+by gvkey datadate;
+model ret_d=ret_msp5;
+run;
+data msp5_&mark.;
+set msp5_&mark.;
+@@BEGIN VARIABLE: msp5_beta3@@msp5_&mark.=ret_msp5;@@END VARIABLE: msp5_beta3@@
+keep gvkey datadate  msp5_&mark.;
+run;
+proc sort data=msp5_&mark. nodupkey;
+by gvkey datadate;
+run;
+data &mark.;
+merge vmkt_&mark. emkt_&mark. msp5_&mark.;
+by gvkey datadate;
+run;
+proc sort data=&mark. nodupkey;
+by gvkey datadate;
+run;
+%mend;
+%beta(intable=base, mark=beta3, begdt=datadate_l1, criteria=30);
+%beta(intable=base, mark=beta6, begdt=datadate_l2, criteria=60);
+%beta(intable=base, mark=beta12, begdt=datadate_l4, criteria=120);
+data dqtr_beta;
+set beta3 beta6 beta12;
+by gvkey datadate;
+run;
+proc sort data=dqtr_beta nodupkey;
+by gvkey datadate;
+run;
+proc sql;
+drop table beta3, beta6, beta12;
+quit;
+/**************Part five: calculate monthly measures of turnover*******/
+proc sql;
+create table crsp_m as select a.*, b.vwretd as ret_vmkt, b.ewretd as ret_emkt, b.sprtrn as ret_msp5
+from crsp_m  as a left join crsp.msi as b
+on a.date=b.date;
+quit;
+data crsp_m;
+set crsp_m;
+date=intnx('month',date,0,'e');
+@@BEGIN VARIABLE: ret_m@@ret_m=ret*1;@@END VARIABLE: ret_m@@
+@@BEGIN VARIABLE: turn_m@@turn_m=vol/(shrout*1000);@@END VARIABLE: turn_m@@
+run;
+data crsp_m;
+set crsp_m;
+if missing(ret_m) then delete;
+if exchcd=3 then  turn_m=(date <='01jan1997'd)*0.5*turn_m+(date>'01jan1997'd)*0.62*turn_m;
+run;
+proc sql;
+create table tpvar as select unique a.gvkey, a.datadate, b.date, b.turn_m
+from base as a left join crsp_m as b
+on a.permno=b.permno and b.date<=a.datadate and b.date>a.datadate_l1;
+quit;
+proc sql;
+create table mqtr_turn as select unique gvkey, datadate, avg(turn_m) as 
+@@BEGIN VARIABLE: turn_mqtr@@turn_mqtr
+@@END VARIABLE: turn_mqtr@@
+from tpvar 
+group by gvkey, datadate;
+quit; 
+proc sort data=mqtr_turn;
+by gvkey datadate;
+run;
+proc sql;
+drop table tpvar;
+run;
+/**********Part six: calculate different measures of past return***********/
+proc sort data=crsp_m;
+by permno date;
+run;
+proc expand data=crsp_m out=tpvar1 method=none;
+  by permno ;
+  id date;
+  convert ret_m=cret/transformout=(+1 cuprod -1);
+  convert ret_vmkt=cret_vmkt/transformout=(+1 cuprod -1);
+  convert ret_emkt=cret_emkt/transformout=(+1 cuprod -1);
+  convert ret_msp5=cret_msp5/transformout=(+1 cuprod -1);
+run;
+proc sql;
+create table tpvar2 as select a.*, b.cret as 
+@@BEGIN VARIABLE: cret_datadate@@cret_datadate, @@END VARIABLE: cret_datadate@@
+b.cret_vmkt as 
+@@BEGIN VARIABLE: cret_vmkt_datadate@@cret_vmkt_datadate, @@END VARIABLE: cret_vmkt_datadate@@
+, b.cret_emkt as 
+@@BEGIN VARIABLE: cret_emkt_datadate@@cret_emkt_datadate, @@END VARIABLE: cret_emkt_datadate@@
+ b.cret_msp5 as 
+@@BEGIN VARIABLE: cret_msp5_datadate@@cret_msp5_datadate, @@END VARIABLE: cret_msp5_datadate@@
+ b.prc 
+from base as a left join tpvar1 as b
+on a.permno=b.permno and a.datadate=b.date;
+quit;
+proc sql;
+create table tpvar2 as select a.*, b.cret as 
+@@BEGIN VARIABLE: cret_datadate_l1@@cret_datadate_l1, @@END VARIABLE: cret_datadate_l1@@
+ b.cret_vmkt as 
+@@BEGIN VARIABLE: cret_vmkt_datadate_l1@@cret_vmkt_datadate_l1, @@END VARIABLE: cret_vmkt_datadate_l1@@
+, b.cret_emkt as 
+@@BEGIN VARIABLE: cret_emkt_datadate_l1@@cret_emkt_datadate_l1, @@END VARIABLE: cret_emkt_datadate_l1@@
+ b.cret_msp5 as 
+@@BEGIN VARIABLE: cret_msp5_datadate_l1@@cret_msp5_datadate_l1
+@@END VARIABLE: cret_msp5_datadate_l1@@
+from tpvar2 as a left join tpvar1 as b
+on a.permno=b.permno and a.datadate_l1=b.date;
+quit;
+proc sql;
+create table tpvar2 as select a.*, b.cret as 
+@@BEGIN VARIABLE: cret_datadate_l2@@cret_datadate_l2, @@END VARIABLE: cret_datadate_l2@@
+b.cret_vmkt as 
+@@BEGIN VARIABLE: cret_vmkt_datadate_l2@@cret_vmkt_datadate_l2, @@END VARIABLE: cret_vmkt_datadate_l2@@
+, b.cret_emkt as 
+@@BEGIN VARIABLE: cret_emkt_datadate_l2@@cret_emkt_datadate_l2, @@END VARIABLE: cret_emkt_datadate_l2@@
+b.cret_msp5 as 
+@@BEGIN VARIABLE: cret_msp5_datadate_l2@@cret_msp5_datadate_l2
+@@END VARIABLE: cret_msp5_datadate_l2@@
+from tpvar2 as a left join tpvar1 as b
+on a.permno=b.permno and a.datadate_l2=b.date;
+quit;
+proc sql;
+create table tpvar2 as select a.*, b.cret as 
+@@BEGIN VARIABLE: cret_datadate_l4@@cret_datadate_l4, @@END VARIABLE: cret_datadate_l4@@
+b.cret_vmkt as 
+@@BEGIN VARIABLE: cret_vmkt_datadate_l4@@cret_vmkt_datadate_l4, @@END VARIABLE: cret_vmkt_datadate_l4@@
+, b.cret_emkt as 
+@@BEGIN VARIABLE: cret_emkt_datadate_l4@@cret_emkt_datadate_l4, @@END VARIABLE: cret_emkt_datadate_l4@@
+b.cret_msp5 as 
+@@BEGIN VARIABLE: cret_msp5_datadate_l4@@cret_msp5_datadate_l4
+@@END VARIABLE: cret_msp5_datadate_l4@@
+from tpvar2 as a left join tpvar1 as b
+on a.permno=b.permno and a.datadate_l4=b.date;
+quit;
+data mqtr_crsp1;
+set tpvar2;
+@@BEGIN VARIABLE: mret3@@mret3=(cret_datadate+1)/(cret_datadate_l1+1)-1;@@END VARIABLE: mret3@@
+@@BEGIN VARIABLE: mret6@@mret6=(cret_datadate+1)/(cret_datadate_l2+1)-1;@@END VARIABLE: mret6@@
+@@BEGIN VARIABLE: mret12@@mret12=(cret_datadate+1)/(cret_datadate_l4+1)-1;@@END VARIABLE: mret12@@
+@@BEGIN VARIABLE: ret3_vmkt@@ret3_vmkt=(cret_vmkt_datadate+1)/(cret_vmkt_datadate_l1+1)-1;@@END VARIABLE: ret3_vmkt@@
+@@BEGIN VARIABLE: ret6_vmkt@@ret6_vmkt=(cret_vmkt_datadate+1)/(cret_vmkt_datadate_l2+1)-1;@@END VARIABLE: ret6_vmkt@@
+@@BEGIN VARIABLE: ret12_vmkt@@ret12_vmkt=(cret_vmkt_datadate+1)/(cret_vmkt_datadate_l4+1)-1;@@END VARIABLE: ret12_vmkt@@
+@@BEGIN VARIABLE: ret3_emkt@@ret3_emkt=(cret_emkt_datadate+1)/(cret_emkt_datadate_l1+1)-1;@@END VARIABLE: ret3_emkt@@
+@@BEGIN VARIABLE: ret6_emkt@@ret6_emkt=(cret_emkt_datadate+1)/(cret_emkt_datadate_l2+1)-1;@@END VARIABLE: ret6_emkt@@
+@@BEGIN VARIABLE: ret12_emkt@@ret12_emkt=(cret_emkt_datadate+1)/(cret_emkt_datadate_l4+1)-1;@@END VARIABLE: ret12_emkt@@
+@@BEGIN VARIABLE: ret3_msp5@@ret3_msp5=(cret_msp5_datadate+1)/(cret_msp5_datadate_l1+1)-1;@@END VARIABLE: ret3_msp5@@
+@@BEGIN VARIABLE: ret6_msp5@@ret6_msp5=(cret_msp5_datadate+1)/(cret_msp5_datadate_l2+1)-1;@@END VARIABLE: ret6_msp5@@
+@@BEGIN VARIABLE: ret12_msp5@@ret12_msp5=(cret_msp5_datadate+1)/(cret_msp5_datadate_l4+1)-1;@@END VARIABLE: ret12_msp5@@
+@@BEGIN VARIABLE: mret3_vmkt@@mret3_vmkt=mret3-ret3_vmkt;@@END VARIABLE: mret3_vmkt@@
+@@BEGIN VARIABLE: mret6_vmkt@@mret6_vmkt=mret6-ret6_vmkt;@@END VARIABLE: mret6_vmkt@@
+@@BEGIN VARIABLE: mret12_vmkt@@mret12_vmkt=mret12-ret12_vmkt;@@END VARIABLE: mret12_vmkt@@
+@@BEGIN VARIABLE: mret3_emkt@@mret3_emkt=mret3-ret3_emkt;@@END VARIABLE: mret3_emkt@@
+@@BEGIN VARIABLE: mret6_emkt@@mret6_emkt=mret6-ret6_emkt;@@END VARIABLE: mret6_emkt@@
+@@BEGIN VARIABLE: mret12_emkt@@mret12_emkt=mret12-ret12_emkt;@@END VARIABLE: mret12_emkt@@
+@@BEGIN VARIABLE: mret3_msp5@@mret3_msp5=mret3-ret3_msp5;@@END VARIABLE: mret3_msp5@@
+@@BEGIN VARIABLE: mret6_msp5@@mret6_msp5=mret6-ret6_msp5;@@END VARIABLE: mret6_msp5@@
+@@BEGIN VARIABLE: mret12_msp5@@mret12_msp5=mret12-ret12_msp5;@@END VARIABLE: mret12_msp5@@
+@@BEGIN VARIABLE: lnprc@@lnprc=log(abs(prc));@@END VARIABLE: lnprc@@
+keep gvkey datadate mret3 mret6 mret12 mret3_emkt mret6_emkt mret12_emkt mret3_vmkt mret6_vmkt mret12_vmkt
+mret3_msp5 mret6_msp5 mret12_msp5 prc lnprc;
+run;
+proc sort data=mqtr_crsp1;
+by gvkey datadate;
+run;
+/*************merge all the microstructure variables******************/
+data qtr_mktvar;
+merge dqtr_taq dqtr_crsp1 dqtr_beta mqtr_turn mqtr_crsp1;
+by gvkey datadate;
+run;
+proc means data=qtr_mktvar p1 p99 p50;
+run;
+proc export data=qtr_mktvar
+outfile="/home/yale/min_zheng/output/qtr_mktvar.csv"
+dbms=csv replace;
+run;

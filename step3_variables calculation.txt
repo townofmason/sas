@@ -1,0 +1,926 @@
+/* 这段代码从多个数据集中提取、处理和合并财务与市场数据，生成一个包含公司标识、财务指标、市场表现和诉讼相关变量的数据集 litigation_var，并将其保存到指定库中，用于后续分析。 */
+/*
+时间限制变量的时间范围
+| 变量名              | 起始时间    | 结束时间     |
+|--------------------|-----------|------------|
+| uni_begdt          | 01JAN2000 | 31DEC2020  |
+*/
+
+libname vars 'G:\0_trial\trial20211010';
+
+/* 定义时间范围 */
+%let uni_begdt = 01JAN2000;
+%let uni_enddt = 31DEC2020;
+
+/*****
+%let uni_begdt = 01JAN1996;
+%let uni_enddt = 31DEC2008;
+
+Kim and Skinner(2012) use the sample period:1996-2008
+*%let uni_begdt = 01JAN1996;
+*%let uni_enddt = 31DEC2008;
+******/
+/* 用到的变量及其数据库来源 */
+/* | 变量名            | 解释                                      | 数据库来源          | */
+/* |-------------------|-------------------------------------------|---------------------| */
+/* | @@VARIABLE: ibq@@IBQ                 | 季度净利润                                | comp.funda          | */
+/* | @@VARIABLE: spiq@@SPIQ               | 特殊项目                                  | comp.funda          | */
+/* | @@VARIABLE: dvpq@@DVPQ             | 季度股息                                  | comp.funda          | */
+/* | @@VARIABLE: rectq@@RECTQ             | 应收账款                                  | comp.funda          | */
+/* | @@VARIABLE: invtq@@IVTQ             | 存货                                      | comp.funda          | */
+/* | @@VARIABLE: acoq@@ACOQ               | 其他流动资产                              | comp.funda          | */
+/* | @@VARIABLE: apq@@APQ                 | 应付账款                                  | comp.funda          | */
+/* | @@VARIABLE: lcoq@@LCOQ              | 其他流动负债                              | comp.funda          | */
+/* | @@VARIABLE: dpq@@DPQ                 | 折旧与摊销                                | comp.funda          | */
+/* | @@VARIABLE: ppentq@@PPENTQ           | 固定资产净值                              | comp.funda          | */
+/* | @@VARIABLE: intanq@@INTANQ           | 无形资产                                  | comp.funda          | */
+/* | @@VARIABLE: atq@@ATQ                 | 总资产                                    | comp.funda          | */
+/* | @@VARIABLE: ceqq@@CEQQ               | 普通股权益                                | comp.funda          | */
+/* 计算出的变量及其含义 */
+/* | 变量名           | 变量解释                                      | 变量计算公式                          | 用到的变量                          | */
+/* |------------------|-----------------------------------------------|---------------------------------------|-------------------------------------| */
+/* | @@VARIABLE: earnq@@earnq             | 季度收益                                  | earnq = ibq + spiq - dvpq             | ibq, spiq, dvpq                     | */
+/* | @@VARIABLE: accrq@@accrq             | 季度应计项目                              | accrq = rectq_ch + invtq_ch + acoq_ch - (apq_ch + lcoq_ch) - dpq | rectq_ch, invtq_ch, acoq_ch, apq_ch, lcoq_ch, dpq | */
+/* | @@VARIABLE: investq@@investq         | 季度投资                                  | investq = ppentq_ch + invtq_ch        | ppentq_ch, invtq_ch                 | */
+/* | @@VARIABLE: noaq_ch@@noaq_ch         | 净运营资产变化                            | noaq_ch = noaq - noaq_l1              | noaq, noaq_l1                       | */
+/* | @@VARIABLE: etpq@@etpq               | 季度收益与市值比                          | etpq = earnq / me_comp                | earnq, me_comp                      | */
+/* | @@VARIABLE: btpq@@btpq               | 季度账面价值与市值比                      | btpq = ceqq / me_comp                 | ceqq, me_comp                       | */
+/* | @@VARIABLE: eptret_eat_2@@eptret_eat_2 | 预期收益率 (eat_2)                        | eptret_eat_2 = con_eatq_2_l1 + etpq_eatq_2_l1 * etpq + btpq_eatq_2_l1 * btpq + accrq_eatq_2_l1 * accrq_eatq + investq_eatq_2_l1 * investq_eatq + noaq_ch_aatq_2_l1 * noaq_ch_aatq | con_eatq_2_l1, etpq_eatq_2_l1, etpq, btpq_eatq_2_l1, btpq, accrq_eatq_2_l1, accrq_eatq, investq_eatq_2_l1, investq_eatq, noaq_ch_aatq_2_l1, noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_aat_2@@eptret_aat_2 | 预期收益率 (aat_2)                        | eptret_aat_2 = con_aatq_2_l1 + etpq_aatq_2_l1 * etpq + btpq_aatq_2_l1 * btpq + accrq_aatq_2_l1 * accrq_aatq + investq_aatq_2_l1 * investq_aatq + noaq_ch_aatq_2_l1 * noaq_ch_aatq | con_aatq_2_l1, etpq_aatq_2_l1, etpq, btpq_aatq_2_l1, btpq, accrq_aatq_2_l1, accrq_aatq, investq_aatq_2_l1, investq_aatq, noaq_ch_aatq_2_l1, noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_bat_2@@eptret_bat_2 | 预期收益率 (bat_2)                        | eptret_bat_2 = con_batq_2_l1 + etpq_batq_2_l1 * etpq + btpq_batq_2_l1 * btpq + accrq_batq_2_l1 * accrq_batq + investq_batq_2_l1 * investq_batq + noaq_ch_batq_2_l1 * noaq_ch_batq | con_batq_2_l1, etpq_batq_2_l1, etpq, btpq_batq_2_l1, btpq, accrq_batq_2_l1, accrq_batq, investq_batq_2_l1, investq_batq, noaq_ch_batq_2_l1, noaq_ch_batq | */
+/* | @@VARIABLE: eptret_eat_3@@eptret_eat_3 | 预期收益率 (eat_3)                        | eptret_eat_3 = con_eatq_3_l1 + etpq_eatq_3_l1 * etpq + btpq_eatq_3_l1 * btpq + accrq_eatq_3_l1 * accrq_eatq + investq_eatq_3_l1 * investq_eatq + noaq_ch_aatq_3_l1 * noaq_ch_aatq | con_eatq_3_l1, etpq_eatq_3_l1, etpq, btpq_eatq_3_l1, btpq, accrq_eatq_3_l1, accrq_eatq, investq_eatq_3_l1, investq_eatq, noaq_ch_aatq_3_l1, noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_aat_3@@eptret_aat_3 | 预期收益率 (aat_3)                        | eptret_aat_3 = con_aatq_3_l1 + etpq_aatq_3_l1 * etpq + btpq_aatq_3_l1 * btpq + accrq_aatq_3_l1 * accrq_aatq + investq_aatq_3_l1 * investq_aatq + noaq_ch_aatq_3_l1 * noaq_ch_aatq | con_aatq_3_l1, etpq_aatq_3_l1, etpq, btpq_aatq_3_l1, btpq, accrq_aatq_3_l1, accrq_aatq, investq_aatq_3_l1, investq_aatq, noaq_ch_aatq_3_l1, noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_bat_3@@eptret_bat_3 | 预期收益率 (bat_3)                        | eptret_bat_3 = con_batq_3_l1 + etpq_batq_3_l1 * etpq + btpq_batq_3_l1 * btpq + accrq_batq_3_l1 * accrq_batq + investq_batq_3_l1 * investq_batq + noaq_ch_batq_3_l1 * noaq_ch_batq | con_batq_3_l1, etpq_batq_3_l1, etpq, btpq_batq_3_l1, btpq, accrq_batq_3_l1, accrq_batq, investq_batq_3_l1, investq_batq, noaq_ch_batq_3_l1, noaq_ch_batq | */
+/* | @@VARIABLE: eptret_eat_4@@eptret_eat_4 | 预期收益率 (eat_4)                        | eptret_eat_4 = con_eatq_4_l1 + etpq_eatq_4_l1 * etpq + btpq_eatq_4_l1 * btpq + accrq_eatq_4_l1 * accrq_eatq + investq_eatq_4_l1 * investq_eatq + noaq_ch_aatq_4_l1 * noaq_ch_aatq | con_eatq_4_l1, etpq_eatq_4_l1, etpq, btpq_eatq_4_l1, btpq, accrq_eatq_4_l1, accrq_eatq, investq_eatq_4_l1, investq_eatq, noaq_ch_aatq_4_l1, noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_aat_4@@eptret_aat_4 | 预期收益率 (aat_4)                        | eptret_aat_4 = con_aatq_4_l1 + etpq_aatq_4_l1 * etpq + btpq_aatq_4_l1 * btpq + accrq_aatq_4_l1 * accrq_aatq + investq_aatq_4_l1 * investq_aatq + noaq_ch_aatq_4_l1 * noaq_ch_aatq | con_aatq_4_l1, etpq_aatq_4_l1, etpq, btpq_aatq_4_l1, btpq, accrq_aatq_4_l1, accrq_aatq, investq_aatq_4_l1, investq_aatq, noaq_ch_aatq_4_l1, noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_bat_4@@eptret_bat_4 | 预期收益率 (bat_4)                        | eptret_bat_4 = con_batq_4_l1 + etpq_batq_4_l1 * etpq + btpq_batq_4_l1 * btpq + accrq_batq_4_l1 * accrq_batq + investq_batq_4_l1 * investq_batq + noaq_ch_batq_4_l1 * noaq_ch_batq | con_batq_4_l1, etpq_batq_4_l1, etpq, btpq_batq_4_l1, btpq, accrq_batq_4_l1, accrq_batq, investq_batq_4_l1, investq_batq, noaq_ch_batq_4_l1, noaq_ch_batq | */
+/* | @@VARIABLE: eptret_eat_5@@eptret_eat_5 | 预期收益率 (eat_5)                        | eptret_eat_5 = con_eatq_5_l1 + etpq_eatq_5_l1 * etpq + btpq_eatq_5_l1 * btpq + accrq_eatq_5_l1 * accrq_eatq + investq_eatq_5_l1 * investq_eatq + noaq_ch_aatq_5_l1 * noaq_ch_aatq | con_eatq_5_l1, etpq_eatq_5_l1, etpq, btpq_eatq_5_l1, btpq, accrq_eatq_5_l1, accrq_eatq, investq_eatq_5_l1, investq_eatq, noaq_ch_aatq_5_l1, noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_aat_5@@eptret_aat_5 | 预期收益率 (aat_5)                        | eptret_aat_5 = con_aatq_5_l1 + etpq_aatq_5_l1 * etpq + btpq_aatq_5_l1 * btpq + accrq_aatq_5_l1 * accrq_aatq + investq_aatq_5_l1 * investq_aatq + noaq_ch_aatq_5_l1 * noaq_ch_aatq | con_aatq_5_l1, etpq_aatq_5_l1, etpq, btpq_aatq_5_l1, btpq, accrq_aatq_5_l1, accrq_aatq, investq_aatq_5_l1, investq_aatq, noaq_ch_aatq_5_l1, noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_bat_5@@eptret_bat_5 | 预期收益率 (bat_5)                        | eptret_bat_5 = con_batq_5_l1 + etpq_batq_5_l1 * etpq + btpq_batq_5_l1 * btpq + accrq_batq_5_l1 * accrq_batq + investq_batq_5_l1 * investq_batq + noaq_ch_batq_5_l1 * noaq_ch_batq | con_batq_5_l1, etpq_batq_5_l1, etpq, btpq_batq_5_l1, btpq, accrq_batq_5_l1, accrq_batq, investq_batq_5_l1, investq_batq, noaq_ch_batq_5_l1, noaq_ch_batq | */
+/* | @@VARIABLE: con_eatq_2_l1@@con_eatq_2_l1 | 预期收益率 (eat_2) 的截距项              | 通过回归模型计算得到                   | */
+/* | @@VARIABLE: etpq_eatq_2_l1@@etpq_eatq_2_l1 | 预期收益率 (eat_2) 的 etpq 系数         | 通过回归模型计算得到                   | */
+/* | @@VARIABLE: btpq_eatq_2_l1@@btpq_eatq_2_l1 | 预期收益率 (eat_2) 的 btpq 系数         | 通过回归模型计算得到                   | */
+/* | @@VARIABLE: accrq_eatq_2_l1@@accrq_eatq_2_l1 | 预期收益率 (eat_2) 的 accrq 系数       | 通过回归模型计算得到                   | */
+/* | @@VARIABLE: investq_eatq_2_l1@@investq_eatq_2_l1 | 预期收益率 (eat_2) 的 investq 系数   | 通过回归模型计算得到                   | */
+/* | @@VARIABLE: noaq_ch_aatq_2_l1@@noaq_ch_aatq_2_l1 | 预期收益率 (eat_2) 的 noaq_ch 系数   | 通过回归模型计算得到                   | */
+/* | @@VARIABLE: noaq@@noaq                     | 净运营资产                                | noaq = rectq + invtq + acoq + ppentq + intanq + altoq - (apq + lcoq + loq) | */
+/* | @@VARIABLE: noaq_l1@@noaq_l1               | 上一期净运营资产                          | noaq_l1 = lag(noaq)                    | */
+/* | @@VARIABLE: noaq_ch@@noaq_ch               | 净运营资产变化                            | noaq_ch = noaq - noaq_l1               | */
+/* | @@VARIABLE: rectq_ch@@rectq_ch             | 应收账款变化                              | rectq_ch = rectq - rectq_l1            | */
+/* | @@VARIABLE: invtq_ch@@invtq_ch             | 存货变化                                  | invtq_ch = invtq - invtq_l1            | */
+/* | @@VARIABLE: acoq_ch@@acoq_ch               | 其他流动资产变化                          | acoq_ch = acoq - acoq_l1               | */
+/* | @@VARIABLE: apq_ch@@apq_ch                 | 应付账款变化                              | apq_ch = apq - apq_l1                  | */
+/* | @@VARIABLE: lcoq_ch@@lcoq_ch               | 其他流动负债变化                          | lcoq_ch = lcoq - lcoq_l1               | */
+/* | @@VARIABLE: eptret_eat_2@@eptret_eat_2     | 预期收益率 (eat_2)                        | eptret_eat_2 = con_eatq_2_l1 + etpq_eatq_2_l1 * etpq + btpq_eatq_2_l1 * btpq + accrq_eatq_2_l1 * accrq_eatq + investq_eatq_2_l1 * investq_eatq + noaq_ch_aatq_2_l1 * noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_eat_2_l1@@eptret_eat_2_l1 | 上一期预期收益率 (eat_2)                | eptret_eat_2_l1 = lag(eptret_eat_2)    | */
+/* | @@VARIABLE: eptret_aat_2@@eptret_aat_2     | 预期收益率 (aat_2)                        | eptret_aat_2 = con_aatq_2_l1 + etpq_aatq_2_l1 * etpq + btpq_aatq_2_l1 * btpq + accrq_aatq_2_l1 * accrq_aatq + investq_aatq_2_l1 * investq_aatq + noaq_ch_aatq_2_l1 * noaq_ch_aatq | */
+/* | @@VARIABLE: eptret_aat_2_l1@@eptret_aat_2_l1 | 上一期预期收益率 (aat_2)                | eptret_aat_2_l1 = lag(eptret_aat_2)    | */
+/* | @@VARIABLE: eptret_bat_2@@eptret_bat_2     | 预期收益率 (bat_2)                        | eptret_bat_2 = con_batq_2_l1 + etpq_batq_2_l1 * etpq + btpq_batq_2_l1 * btpq + accrq_batq_2_l1 * accrq_batq + investq_batq_2_l1 * investq_batq + noaq_ch_batq_2_l1 * noaq_ch_batq | */
+/* | @@VARIABLE: eptret_bat_2_l1@@eptret_bat_2_l1 | 上一期预期收益率 (bat_2)                | eptret_bat_2_l1 = lag(eptret_bat_2)    | */
+/* | @@VARIABLE: eptretnews_eat_2@@eptretnews_eat_2 | 预期收益率变化 (eat_2)                    | eptretnews_eat_2 = eptret_eat_2 - eptret_eat_2_l1 | eptret_eat_2, eptret_eat_2_l1       | */
+/* | @@VARIABLE: eptretnews_aat_2@@eptretnews_aat_2 | 预期收益率变化 (aat_2)                    | eptretnews_aat_2 = eptret_aat_2 - eptret_aat_2_l1 | eptret_aat_2, eptret_aat_2_l1       | */
+/* | @@VARIABLE: eptretnews_bat_2@@eptretnews_bat_2 | 预期收益率变化 (bat_2)                    | eptretnews_bat_2 = eptret_bat_2 - eptret_bat_2_l1 | eptret_bat_2, eptret_bat_2_l1       | */
+/* | @@VARIABLE: eptretnews_eat_3@@eptretnews_eat_3 | 预期收益率变化 (eat_3)                    | eptretnews_eat_3 = eptret_eat_3 - eptret_eat_3_l1 | eptret_eat_3, eptret_eat_3_l1       | */
+/* | @@VARIABLE: eptretnews_aat_3@@eptretnews_aat_3 | 预期收益率变化 (aat_3)                    | eptretnews_aat_3 = eptret_aat_3 - eptret_aat_3_l1 | eptret_aat_3, eptret_aat_3_l1       | */
+/* | @@VARIABLE: eptretnews_bat_3@@eptretnews_bat_3 | 预期收益率变化 (bat_3)                    | eptretnews_bat_3 = eptret_bat_3 - eptret_bat_3_l1 | eptret_bat_3, eptret_bat_3_l1       | */
+/* | @@VARIABLE: eptretnews_eat_4@@eptretnews_eat_4 | 预期收益率变化 (eat_4)                    | eptretnews_eat_4 = eptret_eat_4 - eptret_eat_4_l1 | eptret_eat_4, eptret_eat_4_l1       | */
+/* | @@VARIABLE: eptretnews_aat_4@@eptretnews_aat_4 | 预期收益率变化 (aat_4)                    | eptretnews_aat_4 = eptret_aat_4 - eptret_aat_4_l1 | eptret_aat_4, eptret_aat_4_l1       | */
+/* | @@VARIABLE: eptretnews_bat_4@@eptretnews_bat_4 | 预期收益率变化 (bat_4)                    | eptretnews_bat_4 = eptret_bat_4 - eptret_bat_4_l1 | eptret_bat_4, eptret_bat_4_l1       | */
+/* | @@VARIABLE: eptretnews_eat_5@@eptretnews_eat_5 | 预期收益率变化 (eat_5)                    | eptretnews_eat_5 = eptret_eat_5 - eptret_eat_5_l1 | eptret_eat_5, eptret_eat_5_l1       | */
+/* | @@VARIABLE: eptretnews_aat_5@@eptretnews_aat_5 | 预期收益率变化 (aat_5)                    | eptretnews_aat_5 = eptret_aat_5 - eptret_aat_5_l1 | eptret_aat_5, eptret_aat_5_l1       | */
+/* | @@VARIABLE: eptretnews_bat_5@@eptretnews_bat_5 | 预期收益率变化 (bat_5)                    | eptretnews_bat_5 = eptret_bat_5 - eptret_bat_5_l1 | eptret_bat_5, eptret_bat_5_l1       | */
+data crsp_m;
+set vars.crsp_m;
+run;
+data comp_crsp;
+set vars.comp_crsp;
+run;
+data comp;
+set vars.comp;
+run;
+/*****step1: me_comp******/
+data crsp_m;
+set crsp_m;
+DATE = INTNX("MONTH",date,0,"E");
+@@BEGIN VARIABLE: ME@@
+ME = abs(prc)*shrout/1000;
+label ME = "Issue-Level Market Capitalization, x$1m";
+drop ncusip prc cfacpr shrout shrcd;
+format ret percentn8.4 ME  dollar12.3 ;
+run;
+@@END VARIABLE: ME@@
+proc sql  undo_policy=none;
+create table me_comp
+as select *, sum(me) as me_comp "Company-Level Market Cap, $million" format dollar12.3
+from crsp_m
+group by permco,date
+order by permno,date;
+quit;
+/*****step2: crsp_qret_d1: one quarter ahead return******/
+proc sql;
+create table crsp1 as select unique a.permno, a.datadate, b.date as retdate, b.ret
+from comp_crsp as a left join crsp_m as b
+on a.permno=b.permno and a.datadate<b.date<=intnx('month',a.datadate,3,'e');
+quit;
+proc sql;
+create table crsp_cnt as select unique permno, datadate, count(retdate) as cnt
+from crsp1
+group by permno, datadate;
+quit;
+proc sql;
+create table crsp1 as select a.*, b.cnt
+from crsp1 as a left join crsp_cnt as b
+on a.permno=b.permno and a.datadate=b.datadate;
+quit;
+data crsp2;
+set crsp1;
+where cnt=3;
+run;
+proc sort data=crsp2 nodupkey;
+by permno datadate retdate;
+run;
+data crsp2;
+set crsp2;
+id=intck('month',datadate, retdate);
+if id=1 then id_mth="ret1";
+if id=2 then id_mth="ret2";
+if id=3 then id_mth="ret3";
+run;
+proc transpose data=crsp2 out=crsp3;
+by permno datadate;
+id id_mth;
+var ret;
+run;
+data crsp_qret_d1;
+set crsp3;
+qret_d1=(1+ret1)*(1+ret2)*(1+ret3)-1;
+format qret_d1 percentn8.4;
+keep permno datadate qret_d1;
+run; 
+/******step3: fundatemental variables******/
+data comp1;
+set comp;
+@@BEGIN VARIABLE: atq@@
+@@BEGIN VARIABLE: ibq@@
+@@BEGIN VARIABLE: dpq@@
+@@BEGIN VARIABLE: invtq@@
+@@BEGIN VARIABLE: rectq@@
+@@BEGIN VARIABLE: ppentq@@
+@@BEGIN VARIABLE: loq@@
+@@BEGIN VARIABLE: dvpq@@
+@@BEGIN VARIABLE: spiq@@
+@@BEGIN VARIABLE: spiq@@
+@@BEGIN VARIABLE: apq@@
+@@BEGIN VARIABLE: lcoq@@
+@@BEGIN VARIABLE: intanq@@
+@@BEGIN VARIABLE: lcoq@@
+@@BEGIN VARIABLE: acoq@@
+if acoq=. then acoq=0;
+if apq=. then apq=0;
+if atq=. then atq=0;
+if dpq=. then dpq=0;
+if dvpq=. then dvpq=0;
+if ibq=. then ibq=0;
+if intanq=. then intanq=0;
+if invtq=. then invtq=0;
+if lcoq=. then lcoq=0;
+@@END VARIABLE: apq@@
+@@END VARIABLE: lcoq@@
+@@END VARIABLE: intanq@@
+@@END VARIABLE: lcoq@@
+if loq=. then loq=0;
+if ppentq=. then ppentq=0;
+if rectq=. then rectq=0;
+if spiq=. then spiq=0;
+@@BEGIN VARIABLE: acoq@@
+@@END VARIABLE: atq@@
+@@END VARIABLE: ibq@@
+@@END VARIABLE: dpq@@
+@@END VARIABLE: invtq@@
+@@END VARIABLE: rectq@@
+@@END VARIABLE: ppentq@@
+@@END VARIABLE: loq@@
+@@END VARIABLE: dvpq@@
+@@END VARIABLE: spiq@@
+@@BEGIN VARIABLE: noaq@@
+noaq=rectq+invtq+acoq+ppentq+intanq+altoq-(apq+lcoq+loq);
+@@END VARIABLE: noaq@@
+run;
+proc sql;
+
+create table comp2 as select a.*, b.datadate as datadate_l1, b.acoq as acoq_l1, b.apq as apq_l1, b.atq as atq_l1, b.dpq as dpq_l1, b.dvpq as dvpq_l1
+                          , b.ibq as ibq_l1, b.intanq as intanq_l1, b.invtq as invtq_l1, b.lcoq as lcoq_l1
+@@BEGIN VARIABLE: noaq_l1@@
+@@BEGIN VARIABLE: rectq_l1@@
+                          , b.loq as loq_l1, b.ppentq as ppentq_l1, b.rectq as rectq_l1, b.spiq as spiq_l1, b.noaq as noaq_l1
+@@END VARIABLE: noaq_l1@@
+@@END VARIABLE: rectq_l1@@
+						  from comp1 as a left join comp1 as b
+						  on a.gvkey=b.gvkey and a.mqtr=b.mqtr+25;
+						  quit;
+@@END VARIABLE: gvkey@@
+
+data comp_var;
+set comp2;
+@@BEGIN VARIABLE: earnq@@
+earnq=ibq+spiq-dvpq;
+@@END VARIABLE: earnq@@
+@@BEGIN VARIABLE: rectq_ch@@
+rectq_ch=rectq-rectq_l1;
+@@END VARIABLE: rectq_ch@@
+@@BEGIN VARIABLE: invtq_ch@@
+invtq_ch=invtq-invtq_l1;
+@@END VARIABLE: invtq_ch@@
+@@BEGIN VARIABLE: acoq_ch@@
+acoq_ch=acoq-acoq_l1;
+@@END VARIABLE: acoq_ch@@
+@@BEGIN VARIABLE: apq_ch@@
+apq_ch=apq-apq_l1;
+@@END VARIABLE: apq_ch@@
+@@BEGIN VARIABLE: lcoq_ch@@
+lcoq_ch=lcoq-lcoq_l1;
+@@END VARIABLE: lcoq_ch@@
+ppentq_ch=ppentq-ppentq_l1;
+@@BEGIN VARIABLE: accrq@@
+accrq=rectq_ch+invtq_ch+acoq_ch-(apq_ch+lcoq_ch)-dpq;
+@@END VARIABLE: accrq@@
+eatq=atq;
+batq=atq_l1;
+aatq=(atq+atq_l1)/2;
+accrq_eatq=accrq/eatq;
+accrq_aatq=accrq/aatq;
+accrq_batq=accrq/batq;
+@@BEGIN VARIABLE: investq@@
+investq=ppentq_ch+invtq_ch;
+@@END VARIABLE: investq@@
+investq_eatq=investq/eatq;
+investq_aatq=investq/aatq;
+investq_batq=investq/batq;
+@@BEGIN VARIABLE: noaq_ch@@
+noaq_ch=noaq-noaq_l1;
+@@END VARIABLE: noaq_ch@@
+noaq_ch_eatq=noaq_ch/eatq;
+noaq_ch_aatq=noaq_ch/aatq;
+noaq_ch_batq=noaq_ch/batq;
+@@BEGIN VARIABLE: bvq@@
+bvq=ceqq;
+@@END VARIABLE: bvq@@
+@@BEGIN VARIABLE: ceqq@@
+keep gvkey datadate  datadate_l1 earnq ceqq accrq_batq accrq_aatq accrq_eatq investq_batq
+@@END VARIABLE: ceqq@@
+
+            investq_aatq investq_eatq noaq_ch_eatq noaq_ch_aatq noaq_ch_batq ;   
+run;
+/******step4: prepare the variable data for regressions******/
+proc sql;
+create table tb1 as select unique a.*,b.datadate_l1, b.earnq, b.ceqq, b.accrq_batq, b.accrq_aatq, b.accrq_eatq
+                                     , b.investq_batq, b.investq_aatq, b.investq_eatq
+									 , b.noaq_ch_batq, b.noaq_ch_aatq, b.noaq_ch_eatq
+									 from comp_crsp as a left join comp_var as b
+									 on a.gvkey=b.gvkey and a.datadate=b.datadate;
+									 quit;
+proc sql;
+create table tb1 as select unique a.*, b.me_comp from tb1 as a left join me_comp as b
+on a.permno=b.permno and a.datadate=b.date;
+quit;
+proc sql;
+create table tb1 as select unique a.*, b.qret_d1 from tb1 as a left join crsp_qret_d1 as b
+on a.permno=b.permno and a.datadate=b.datadate;
+quit;
+data tb1;
+set tb1;
+@@BEGIN VARIABLE: etpq@@
+etpq=earnq/me_comp;
+@@END VARIABLE: etpq@@
+@@BEGIN VARIABLE: btpq@@
+btpq=ceqq/me_comp;
+@@END VARIABLE: btpq@@
+run;
+data tb2;
+set tb1;
+keep datadate;
+run;
+proc sort data=tb2 nodupkey;
+by datadate;
+run;
+proc delete data=comp1;
+run;
+proc delete data=comp2;
+run;
+proc delete data=crsp1;
+run;
+proc delete data=crsp2;
+run;
+proc delete data=crsp3;
+run;
+proc delete data=crsp_cnt;
+run;
+/******step5:estimate the coefficients******/
+/******input tb3_2 and output cf_2 ******/
+proc sql;
+create table tb3_2 as select unique a.datadate, b.permno, b.datadate as permno_date, b.qret_d1, b.etpq, b.btpq
+                                       , b.accrq_batq, b.accrq_aatq, b.accrq_eatq 
+                                       , b.investq_batq, b.investq_aatq, b.investq_eatq 
+                                       , b.noaq_ch_eatq, b.noaq_ch_aatq, b.noaq_ch_batq
+									   from tb2 as a left join tb1 as b
+									   on a.datadate>=b.datadate and intnx('month',a.datadate,-24,'e')<b.datadate;
+									   quit;
+proc reg data=tb3_2 outest=cf_eatq_2  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_eatq investq_eatq noaq_ch_eatq ;
+run;
+data cf_eatq_2;
+set cf_eatq_2;
+@@BEGIN VARIABLE: con_eatq_2@@
+con_eatq_2=Intercept;
+@@END VARIABLE: con_eatq_2@@
+@@BEGIN VARIABLE: etpq_eatq_2@@
+etpq_eatq_2=etpq;
+@@END VARIABLE: etpq_eatq_2@@
+@@BEGIN VARIABLE: btpq_eatq_2@@
+btpq_eatq_2=btpq;
+@@END VARIABLE: btpq_eatq_2@@
+@@BEGIN VARIABLE: accrq_eatq_2@@
+accrq_eatq_2=accrq_eatq;
+@@END VARIABLE: accrq_eatq_2@@
+@@BEGIN VARIABLE: investq_eatq_2@@
+investq_eatq_2=investq_eatq;
+@@END VARIABLE: investq_eatq_2@@
+@@BEGIN VARIABLE: noaq_ch_eatq_2@@
+noaq_ch_eatq_2=noaq_ch_eatq;
+@@END VARIABLE: noaq_ch_eatq_2@@
+keep datadate con_eatq_2 etpq_eatq_2 btpq_eatq_2  accrq_eatq_2 investq_eatq_2 noaq_ch_eatq_2;
+run;
+proc reg data=tb3_2 outest=cf_aatq_2  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_aatq investq_aatq noaq_ch_aatq ;
+run;
+data cf_aatq_2;
+set cf_aatq_2;
+@@BEGIN VARIABLE: con_aatq_2@@
+con_aatq_2=Intercept;
+@@END VARIABLE: con_aatq_2@@
+@@BEGIN VARIABLE: etpq_aatq_2@@
+etpq_aatq_2=etpq;
+@@END VARIABLE: etpq_aatq_2@@
+@@BEGIN VARIABLE: btpq_aatq_2@@
+btpq_aatq_2=btpq;
+@@END VARIABLE: btpq_aatq_2@@
+@@BEGIN VARIABLE: accrq_aatq_2@@
+accrq_aatq_2=accrq_aatq;
+@@END VARIABLE: accrq_aatq_2@@
+@@BEGIN VARIABLE: investq_aatq_2@@
+investq_aatq_2=investq_aatq;
+@@END VARIABLE: investq_aatq_2@@
+@@BEGIN VARIABLE: noaq_ch_aatq_2@@
+noaq_ch_aatq_2=noaq_ch_aatq;
+@@END VARIABLE: noaq_ch_aatq_2@@
+keep datadate con_aatq_2 etpq_aatq_2 btpq_aatq_2 accrq_aatq_2 investq_aatq_2 noaq_ch_aatq_2;
+run;
+proc reg data=tb3_2 outest=cf_batq_2  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_batq investq_batq noaq_ch_batq ;
+run;
+data cf_batq_2;
+set cf_batq_2;
+@@BEGIN VARIABLE: con_batq_2@@
+con_batq_2=Intercept;
+@@END VARIABLE: con_batq_2@@
+@@BEGIN VARIABLE: etpq_batq_2@@
+etpq_batq_2=etpq;
+@@END VARIABLE: etpq_batq_2@@
+@@BEGIN VARIABLE: btpq_batq_2@@
+btpq_batq_2=btpq;
+@@END VARIABLE: btpq_batq_2@@
+@@BEGIN VARIABLE: accrq_batq_2@@
+accrq_batq_2=accrq_batq;
+@@END VARIABLE: accrq_batq_2@@
+@@BEGIN VARIABLE: investq_batq_2@@
+investq_batq_2=investq_batq;
+@@END VARIABLE: investq_batq_2@@
+@@BEGIN VARIABLE: noaq_ch_batq_2@@
+noaq_ch_batq_2=noaq_ch_batq;
+@@END VARIABLE: noaq_ch_batq_2@@
+keep datadate con_batq_2 etpq_batq_2 btpq_batq_2 accrq_batq_2 investq_batq_2 noaq_ch_batq_2;
+run;
+proc sort data=cf_eatq_2 nodupkey;
+by datadate;
+run;
+proc sort data=cf_aatq_2 nodupkey;
+by datadate;
+run;
+proc sort data=cf_batq_2 nodupkey;
+by datadate;
+run;
+data cf_2;
+merge cf_eatq_2 cf_aatq_2 cf_batq_2;
+by datadate;
+run;
+proc delete data=tb3_2;
+run;
+proc delete data=cf_eatq_2;
+run;
+proc delete data=cf_aatq_2;
+run;
+proc delete data=cf_batq_2;
+run;
+/******input tb3_3 and output cf_3 ******/
+proc sql;
+create table tb3_3 as select unique a.datadate, b.permno, b.datadate as permno_date, b.qret_d1, b.etpq, b.btpq
+                                       , b.accrq_batq, b.accrq_aatq, b.accrq_eatq 
+                                       , b.investq_batq, b.investq_aatq, b.investq_eatq 
+                                       , b.noaq_ch_eatq, b.noaq_ch_aatq, b.noaq_ch_batq
+									   from tb2 as a left join tb1 as b
+									   on a.datadate>=b.datadate and intnx('month',a.datadate,-36,'e')<b.datadate;
+									   quit;
+proc reg data=tb3_3 outest=cf_eatq_3  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_eatq investq_eatq noaq_ch_eatq ;
+run;
+data cf_eatq_3;
+set cf_eatq_3;
+@@BEGIN VARIABLE: con_eatq_3@@
+con_eatq_3=Intercept;
+@@END VARIABLE: con_eatq_3@@
+@@BEGIN VARIABLE: etpq_eatq_3@@
+etpq_eatq_3=etpq;
+@@END VARIABLE: etpq_eatq_3@@
+@@BEGIN VARIABLE: btpq_eatq_3@@
+btpq_eatq_3=btpq;
+@@END VARIABLE: btpq_eatq_3@@
+@@BEGIN VARIABLE: accrq_eatq_3@@
+accrq_eatq_3=accrq_eatq;
+@@END VARIABLE: accrq_eatq_3@@
+@@BEGIN VARIABLE: investq_eatq_3@@
+investq_eatq_3=investq_eatq;
+@@END VARIABLE: investq_eatq_3@@
+@@BEGIN VARIABLE: noaq_ch_eatq_3@@
+noaq_ch_eatq_3=noaq_ch_eatq;
+@@END VARIABLE: noaq_ch_eatq_3@@
+keep datadate con_eatq_3 etpq_eatq_3 btpq_eatq_3 accrq_eatq_3 investq_eatq_3 noaq_ch_eatq_3;
+run;
+proc reg data=tb3_3 outest=cf_aatq_3  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_aatq investq_aatq noaq_ch_aatq ;
+run;
+data cf_aatq_3;
+set cf_aatq_3;
+@@BEGIN VARIABLE: con_aatq_3@@
+con_aatq_3=Intercept;
+@@END VARIABLE: con_aatq_3@@
+@@BEGIN VARIABLE: etpq_aatq_3@@
+etpq_aatq_3=etpq;
+@@END VARIABLE: etpq_aatq_3@@
+@@BEGIN VARIABLE: btpq_aatq_3@@
+btpq_aatq_3=btpq;
+@@END VARIABLE: btpq_aatq_3@@
+@@BEGIN VARIABLE: accrq_aatq_3@@
+accrq_aatq_3=accrq_aatq;
+@@END VARIABLE: accrq_aatq_3@@
+@@BEGIN VARIABLE: investq_aatq_3@@
+investq_aatq_3=investq_aatq;
+@@END VARIABLE: investq_aatq_3@@
+@@BEGIN VARIABLE: noaq_ch_aatq_3@@
+noaq_ch_aatq_3=noaq_ch_aatq;
+@@END VARIABLE: noaq_ch_aatq_3@@
+keep datadate con_aatq_3 etpq_aatq_3 btpq_aatq_3  accrq_aatq_3 investq_aatq_3 noaq_ch_aatq_3;
+run;
+proc reg data=tb3_3 outest=cf_batq_3  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_batq investq_batq noaq_ch_batq ;
+run;
+data cf_batq_3;
+set cf_batq_3;
+@@BEGIN VARIABLE: con_batq_3@@
+con_batq_3=Intercept;
+@@END VARIABLE: con_batq_3@@
+@@BEGIN VARIABLE: etpq_batq_3@@
+etpq_batq_3=etpq;
+@@END VARIABLE: etpq_batq_3@@
+@@BEGIN VARIABLE: btpq_batq_3@@
+btpq_batq_3=btpq;
+@@END VARIABLE: btpq_batq_3@@
+@@BEGIN VARIABLE: accrq_batq_3@@
+accrq_batq_3=accrq_batq;
+@@END VARIABLE: accrq_batq_3@@
+@@BEGIN VARIABLE: investq_batq_3@@
+investq_batq_3=investq_batq;
+@@END VARIABLE: investq_batq_3@@
+@@BEGIN VARIABLE: noaq_ch_batq_3@@
+noaq_ch_batq_3=noaq_ch_batq;
+@@END VARIABLE: noaq_ch_batq_3@@
+keep datadate con_batq_3 etpq_batq_3 btpq_batq_3 accrq_batq_3 investq_batq_3 noaq_ch_batq_3;
+run;
+proc sort data=cf_eatq_3 nodupkey;
+by datadate;
+run;
+proc sort data=cf_aatq_3 nodupkey;
+by datadate;
+run;
+proc sort data=cf_batq_3 nodupkey;
+by datadate;
+run;
+data cf_3;
+merge cf_eatq_3 cf_aatq_3 cf_batq_3;
+by datadate;
+run;
+proc delete data=cf_eatq_3;
+run;
+proc delete data=cf_aatq_3;
+run;
+proc delete data=cf_batq_3;
+run;
+proc delete data=tb3_3;
+run;
+/******input tb3_4 and output cf_4 ******/
+proc sql;
+create table tb3_4 as select unique a.datadate, b.permno, b.datadate as permno_date, b.qret_d1, b.etpq, b.btpq
+                                       , b.accrq_batq, b.accrq_aatq, b.accrq_eatq 
+                                       , b.investq_batq, b.investq_aatq, b.investq_eatq 
+                                       , b.noaq_ch_eatq, b.noaq_ch_aatq, b.noaq_ch_batq
+									   from tb2 as a left join tb1 as b
+									   on a.datadate>=b.datadate and intnx('month',a.datadate,-48,'e')<b.datadate;
+									   quit;
+proc reg data=tb3_4 outest=cf_eatq_4  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_eatq investq_eatq noaq_ch_eatq ;
+run;
+data cf_eatq_4;
+set cf_eatq_4;
+@@BEGIN VARIABLE: con_eatq_4@@
+con_eatq_4=Intercept;
+@@END VARIABLE: con_eatq_4@@
+@@BEGIN VARIABLE: etpq_eatq_4@@
+etpq_eatq_4=etpq;
+@@END VARIABLE: etpq_eatq_4@@
+@@BEGIN VARIABLE: btpq_eatq_4@@
+btpq_eatq_4=btpq;
+@@END VARIABLE: btpq_eatq_4@@
+@@BEGIN VARIABLE: accrq_eatq_4@@
+accrq_eatq_4=accrq_eatq;
+@@END VARIABLE: accrq_eatq_4@@
+@@BEGIN VARIABLE: investq_eatq_4@@
+investq_eatq_4=investq_eatq;
+@@END VARIABLE: investq_eatq_4@@
+@@BEGIN VARIABLE: noaq_ch_eatq_4@@
+noaq_ch_eatq_4=noaq_ch_eatq;
+@@END VARIABLE: noaq_ch_eatq_4@@
+keep datadate con_eatq_4 etpq_eatq_4 btpq_eatq_4 accrq_eatq_4 investq_eatq_4 noaq_ch_eatq_4;
+run;
+proc reg data=tb3_4 outest=cf_aatq_4  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_aatq investq_aatq noaq_ch_aatq ;
+run;
+data cf_aatq_4;
+set cf_aatq_4;
+@@BEGIN VARIABLE: con_aatq_4@@
+con_aatq_4=Intercept;
+@@END VARIABLE: con_aatq_4@@
+@@BEGIN VARIABLE: etpq_aatq_4@@
+etpq_aatq_4=etpq;
+@@END VARIABLE: etpq_aatq_4@@
+@@BEGIN VARIABLE: btpq_aatq_4@@
+btpq_aatq_4=btpq;
+@@END VARIABLE: btpq_aatq_4@@
+@@BEGIN VARIABLE: accrq_aatq_4@@
+accrq_aatq_4=accrq_aatq;
+@@END VARIABLE: accrq_aatq_4@@
+@@BEGIN VARIABLE: investq_aatq_4@@
+investq_aatq_4=investq_aatq;
+@@END VARIABLE: investq_aatq_4@@
+@@BEGIN VARIABLE: noaq_ch_aatq_4@@
+noaq_ch_aatq_4=noaq_ch_aatq;
+@@END VARIABLE: noaq_ch_aatq_4@@
+keep datadate con_aatq_4 etpq_aatq_4 btpq_aatq_4  accrq_aatq_4 investq_aatq_4 noaq_ch_aatq_4;
+run;
+proc reg data=tb3_4 outest=cf_batq_4  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_batq investq_batq noaq_ch_batq ;
+run;
+data cf_batq_4;
+set cf_batq_4;
+@@BEGIN VARIABLE: con_batq_4@@
+con_batq_4=Intercept;
+@@END VARIABLE: con_batq_4@@
+@@BEGIN VARIABLE: etpq_batq_4@@
+etpq_batq_4=etpq;
+@@END VARIABLE: etpq_batq_4@@
+@@BEGIN VARIABLE: btpq_batq_4@@
+btpq_batq_4=btpq;
+@@END VARIABLE: btpq_batq_4@@
+@@BEGIN VARIABLE: accrq_batq_4@@
+accrq_batq_4=accrq_batq;
+@@END VARIABLE: accrq_batq_4@@
+@@BEGIN VARIABLE: investq_batq_4@@
+investq_batq_4=investq_batq;
+@@END VARIABLE: investq_batq_4@@
+@@BEGIN VARIABLE: noaq_ch_batq_4@@
+noaq_ch_batq_4=noaq_ch_batq;
+@@END VARIABLE: noaq_ch_batq_4@@
+keep datadate con_batq_4 etpq_batq_4 btpq_batq_4 accrq_batq_4 investq_batq_4 noaq_ch_batq_4;
+run;
+proc sort data=cf_eatq_4 nodupkey;
+by datadate;
+run;
+proc sort data=cf_aatq_4 nodupkey;
+by datadate;
+run;
+proc sort data=cf_batq_4 nodupkey;
+by datadate;
+run;
+data cf_4;
+merge cf_eatq_4 cf_aatq_4 cf_batq_4;
+by datadate;
+run;
+proc delete data=cf_eatq_4;
+run;
+proc delete data=cf_aatq_4;
+run;
+proc delete data=cf_batq_4;
+run;
+proc delete data=tb3_4;
+run;
+/******input tb3_5 and output cf_5 ******/
+proc sql;
+create table tb3_5 as select unique a.datadate, b.permno, b.datadate as permno_date, b.qret_d1, b.etpq, b.btpq
+                                       , b.accrq_batq, b.accrq_aatq, b.accrq_eatq 
+                                       , b.investq_batq, b.investq_aatq, b.investq_eatq 
+                                       , b.noaq_ch_eatq, b.noaq_ch_aatq, b.noaq_ch_batq
+									   from tb2 as a left join tb1 as b
+									   on a.datadate>=b.datadate and intnx('month',a.datadate,-60,'e')<b.datadate;
+									   quit;
+proc reg data=tb3_5 outest=cf_eatq_5  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_eatq investq_eatq noaq_ch_eatq ;
+run;
+data cf_eatq_5;
+set cf_eatq_5;
+@@BEGIN VARIABLE: con_eatq_5@@
+con_eatq_5=Intercept;
+@@END VARIABLE: con_eatq_5@@
+@@BEGIN VARIABLE: etpq_eatq_5@@
+etpq_eatq_5=etpq;
+@@END VARIABLE: etpq_eatq_5@@
+@@BEGIN VARIABLE: btpq_eatq_5@@
+btpq_eatq_5=btpq;
+@@END VARIABLE: btpq_eatq_5@@
+@@BEGIN VARIABLE: accrq_eatq_5@@
+accrq_eatq_5=accrq_eatq;
+@@END VARIABLE: accrq_eatq_5@@
+@@BEGIN VARIABLE: investq_eatq_5@@
+investq_eatq_5=investq_eatq;
+@@END VARIABLE: investq_eatq_5@@
+@@BEGIN VARIABLE: noaq_ch_eatq_5@@
+noaq_ch_eatq_5=noaq_ch_eatq;
+@@END VARIABLE: noaq_ch_eatq_5@@
+keep datadate con_eatq_5 etpq_eatq_5 btpq_eatq_5 accrq_eatq_5 investq_eatq_5 noaq_ch_eatq_5;
+run;
+proc reg data=tb3_5 outest=cf_aatq_5  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_aatq investq_aatq noaq_ch_aatq ;
+run;
+data cf_aatq_5;
+set cf_aatq_5;
+@@BEGIN VARIABLE: con_aatq_5@@
+con_aatq_5=Intercept;
+@@END VARIABLE: con_aatq_5@@
+@@BEGIN VARIABLE: etpq_aatq_5@@
+etpq_aatq_5=etpq;
+@@END VARIABLE: etpq_aatq_5@@
+@@BEGIN VARIABLE: btpq_aatq_5@@
+btpq_aatq_5=btpq;
+@@END VARIABLE: btpq_aatq_5@@
+@@BEGIN VARIABLE: accrq_aatq_5@@
+accrq_aatq_5=accrq_aatq;
+@@END VARIABLE: accrq_aatq_5@@
+@@BEGIN VARIABLE: investq_aatq_5@@
+investq_aatq_5=investq_aatq;
+@@END VARIABLE: investq_aatq_5@@
+@@BEGIN VARIABLE: noaq_ch_aatq_5@@
+noaq_ch_aatq_5=noaq_ch_aatq;
+@@END VARIABLE: noaq_ch_aatq_5@@
+keep datadate con_aatq_5 etpq_aatq_5 btpq_aatq_5  accrq_aatq_5 investq_aatq_5 noaq_ch_aatq_5;
+run;
+proc reg data=tb3_5 outest=cf_batq_5  noprint;
+by datadate;
+model qret_d1=etpq btpq accrq_batq investq_batq noaq_ch_batq ;
+run;
+data cf_batq_5;
+set cf_batq_5;
+@@BEGIN VARIABLE: con_batq_5@@
+con_batq_5=Intercept;
+@@END VARIABLE: con_batq_5@@
+@@BEGIN VARIABLE: etpq_batq_5@@
+etpq_batq_5=etpq;
+@@END VARIABLE: etpq_batq_5@@
+@@BEGIN VARIABLE: btpq_batq_5@@
+btpq_batq_5=btpq;
+@@END VARIABLE: btpq_batq_5@@
+@@BEGIN VARIABLE: accrq_batq_5@@
+accrq_batq_5=accrq_batq;
+@@END VARIABLE: accrq_batq_5@@
+@@BEGIN VARIABLE: investq_batq_5@@
+investq_batq_5=investq_batq;
+@@END VARIABLE: investq_batq_5@@
+@@BEGIN VARIABLE: noaq_ch_batq_5@@
+noaq_ch_batq_5=noaq_ch_batq;
+@@END VARIABLE: noaq_ch_batq_5@@
+keep datadate con_batq_5 etpq_batq_5 btpq_batq_5 accrq_batq_5 investq_batq_5 noaq_ch_batq_5;
+run;
+proc sort data=cf_eatq_5 nodupkey;
+by datadate;
+run;
+proc sort data=cf_aatq_5 nodupkey;
+by datadate;
+run;
+proc sort data=cf_batq_5 nodupkey;
+by datadate;
+run;
+data cf_5;
+merge cf_eatq_5 cf_aatq_5 cf_batq_5;
+by datadate;
+run;
+proc delete data=cf_eatq_5;
+run;
+proc delete data=cf_aatq_5;
+run;
+proc delete data=cf_batq_5;
+run;
+proc delete data=tb3_5;
+run;
+
+/******step6:use coefficient estimates to calculate expected return () and expected return news******/
+proc sql;
+@@BEGIN VARIABLE: con_eatq_2_l1@@
+@@BEGIN VARIABLE: etpq_eatq_2_l1@@
+
+create table tb5 as select a.*,b.con_eatq_2 as con_eatq_2_l1,b.etpq_eatq_2 as @@END VARIABLE: con_eatq_2_l1@@
+@@END VARIABLE: etpq_eatq_2_l1@@
+@@BEGIN VARIABLE: btpq_eatq_2_l1@@
+etpq_eatq_2_l1,b.btpq_eatq_2 as btpq_eatq_2_l1,       @@END VARIABLE: btpq_eatq_2_l1@@
+@@BEGIN VARIABLE: accrq_eatq_2_l1@@
+         b.accrq_eatq_2 as accrq_eatq_2_l1,b.investq_eatq_2 as investq_eatq_2_l1,b.noaq_ch_eatq_2 as noaq_ch_eatq_2_l1, 
+@@END VARIABLE: accrq_eatq_2_l1@@
+               b.con_aatq_2 as con_aatq_2_l1,b.etpq_aatq_2 as etpq_aatq_2_l1,b.btpq_aatq_2 as btpq_aatq_2_l1,
+@@BEGIN VARIABLE: investq_eatq_2_l1@@
+@@BEGIN VARIABLE: noaq_ch_aatq_2_l1@@
+               b.accrq_aatq_2 as accrq_aatq_2_l1,b.investq_aatq_2 as investq_aatq_2_l1,b.noaq_ch_aatq_2 as noaq_ch_aatq_2_l1, @@END VARIABLE: investq_eatq_2_l1@@
+@@END VARIABLE: noaq_ch_aatq_2_l1@@
+               b.con_batq_2 as con_batq_2_l1,b.etpq_batq_2 as etpq_batq_2_l1,b.btpq_batq_2 as btpq_batq_2_l1, 
+               b.accrq_batq_2 as accrq_batq_2_l1,b.investq_batq_2 as investq_batq_2_l1,b.noaq_ch_batq_2 as noaq_ch_batq_2_l1
+			   from tb1 as a left join cf_2 as b
+			   on  a.datadate_l1=b.datadate;
+			   quit;
+proc sql;
+create table tb5 as select a.*,b.con_eatq_3 as con_eatq_3_l1,b.etpq_eatq_3 as etpq_eatq_3_l1,b.btpq_eatq_3 as btpq_eatq_3_l1, 
+               b.accrq_eatq_3 as accrq_eatq_3_l1,b.investq_eatq_3 as investq_eatq_3_l1,b.noaq_ch_eatq_3 as noaq_ch_eatq_3_l1, 
+               b.con_aatq_3 as con_aatq_3_l1,b.etpq_aatq_3 as etpq_aatq_3_l1,b.btpq_aatq_3 as btpq_aatq_3_l1,
+               b.accrq_aatq_3 as accrq_aatq_3_l1,b.investq_aatq_3 as investq_aatq_3_l1,b.noaq_ch_aatq_3 as noaq_ch_aatq_3_l1, 
+               b.con_batq_3 as con_batq_3_l1,b.etpq_batq_3 as etpq_batq_3_l1,b.btpq_batq_3 as btpq_batq_3_l1, 
+               b.accrq_batq_3 as accrq_batq_3_l1,b.investq_batq_3 as investq_batq_3_l1,b.noaq_ch_batq_3 as noaq_ch_batq_3_l1
+			   from tb5 as a left join cf_3 as b
+			   on  a.datadate_l1=b.datadate;
+			   quit;
+proc sql;
+create table tb5 as select a.*,b.con_eatq_4 as con_eatq_4_l1,b.etpq_eatq_4 as etpq_eatq_4_l1,b.btpq_eatq_4 as btpq_eatq_4_l1, 
+               b.accrq_eatq_4 as accrq_eatq_4_l1,b.investq_eatq_4 as investq_eatq_4_l1,b.noaq_ch_eatq_4 as noaq_ch_eatq_4_l1, 
+               b.con_aatq_4 as con_aatq_4_l1,b.etpq_aatq_4 as etpq_aatq_4_l1,b.btpq_aatq_4 as btpq_aatq_4_l1,
+               b.accrq_aatq_4 as accrq_aatq_4_l1,b.investq_aatq_4 as investq_aatq_4_l1,b.noaq_ch_aatq_4 as noaq_ch_aatq_4_l1, 
+               b.con_batq_4 as con_batq_4_l1,b.etpq_batq_4 as etpq_batq_4_l1,b.btpq_batq_4 as btpq_batq_4_l1, 
+               b.accrq_batq_4 as accrq_batq_4_l1,b.investq_batq_4 as investq_batq_4_l1,b.noaq_ch_batq_4 as noaq_ch_batq_4_l1
+			   from tb5 as a left join cf_4 as b
+			   on  a.datadate_l1=b.datadate;
+			   quit;
+proc sql;
+create table tb5 as select a.*,b.con_eatq_5 as con_eatq_5_l1,b.etpq_eatq_5 as etpq_eatq_5_l1,b.btpq_eatq_5 as btpq_eatq_5_l1, 
+               b.accrq_eatq_5 as accrq_eatq_5_l1,b.investq_eatq_5 as investq_eatq_5_l1,b.noaq_ch_eatq_5 as noaq_ch_eatq_5_l1, 
+               b.con_aatq_5 as con_aatq_5_l1,b.etpq_aatq_5 as etpq_aatq_5_l1,b.btpq_aatq_5 as btpq_aatq_5_l1,
+               b.accrq_aatq_5 as accrq_aatq_5_l1,b.investq_aatq_5 as investq_aatq_5_l1,b.noaq_ch_aatq_5 as noaq_ch_aatq_5_l1, 
+               b.con_batq_5 as con_batq_5_l1,b.etpq_batq_5 as etpq_batq_5_l1,b.btpq_batq_5 as btpq_batq_5_l1, 
+               b.accrq_batq_5 as accrq_batq_5_l1,b.investq_batq_5 as investq_batq_5_l1,b.noaq_ch_batq_5 as noaq_ch_batq_5_l1
+			   from tb5 as a left join cf_5 as b
+			   on  a.datadate_l1=b.datadate;
+			   quit;
+data eptret;
+set tb5;
+@@BEGIN VARIABLE: eptret_eat_2@@
+eptret_eat_2=con_eatq_2_l1+etpq_eatq_2_l1*etpq+btpq_eatq_2_l1*btpq
+             +accrq_eatq_2_l1*accrq_eatq+investq_eatq_2_l1*investq_eatq+noaq_ch_aatq_2_l1* noaq_ch_aatq;
+@@END VARIABLE: eptret_eat_2@@
+@@BEGIN VARIABLE: eptret_aat_2@@
+eptret_aat_2=con_aatq_2_l1+etpq_aatq_2_l1*etpq+btpq_aatq_2_l1*btpq
+             +accrq_aatq_2_l1*accrq_aatq+investq_aatq_2_l1*investq_aatq+noaq_ch_aatq_2_l1* noaq_ch_aatq;
+@@END VARIABLE: eptret_aat_2@@
+@@BEGIN VARIABLE: eptret_bat_2@@
+eptret_bat_2=con_batq_2_l1+etpq_batq_2_l1*etpq+btpq_batq_2_l1*btpq
+             +accrq_batq_2_l1*accrq_batq+investq_batq_2_l1*investq_batq+noaq_ch_batq_2_l1* noaq_ch_batq;
+@@END VARIABLE: eptret_bat_2@@
+@@BEGIN VARIABLE: eptret_eat_3@@
+eptret_eat_3=con_eatq_3_l1+etpq_eatq_3_l1*etpq+btpq_eatq_3_l1*btpq
+             +accrq_eatq_3_l1*accrq_eatq+investq_eatq_3_l1*investq_eatq+noaq_ch_aatq_3_l1* noaq_ch_aatq;
+@@END VARIABLE: eptret_eat_3@@
+@@BEGIN VARIABLE: eptret_aat_3@@
+eptret_aat_3=con_aatq_3_l1+etpq_aatq_3_l1*etpq+btpq_aatq_3_l1*btpq
+             +accrq_aatq_3_l1*accrq_aatq+investq_aatq_3_l1*investq_aatq+noaq_ch_aatq_3_l1* noaq_ch_aatq;
+@@END VARIABLE: eptret_aat_3@@
+@@BEGIN VARIABLE: eptret_bat_3@@
+eptret_bat_3=con_batq_3_l1+etpq_batq_3_l1*etpq+btpq_batq_3_l1*btpq
+             +accrq_batq_3_l1*accrq_batq+investq_batq_3_l1*investq_batq+noaq_ch_batq_3_l1* noaq_ch_batq;
+@@END VARIABLE: eptret_bat_3@@
+@@BEGIN VARIABLE: eptret_eat_4@@
+eptret_eat_4=con_eatq_4_l1+etpq_eatq_4_l1*etpq+btpq_eatq_4_l1*btpq
+             +accrq_eatq_4_l1*accrq_eatq+investq_eatq_4_l1*investq_eatq+noaq_ch_aatq_4_l1* noaq_ch_aatq;
+@@END VARIABLE: eptret_eat_4@@
+@@BEGIN VARIABLE: eptret_aat_4@@
+eptret_aat_4=con_aatq_4_l1+etpq_aatq_4_l1*etpq+btpq_aatq_4_l1*btpq
+             +accrq_aatq_4_l1*accrq_aatq+investq_aatq_4_l1*investq_aatq+noaq_ch_aatq_4_l1* noaq_ch_aatq;
+@@END VARIABLE: eptret_aat_4@@
+@@BEGIN VARIABLE: eptret_bat_4@@
+eptret_bat_4=con_batq_4_l1+etpq_batq_4_l1*etpq+btpq_batq_4_l1*btpq
+             +accrq_batq_4_l1*accrq_batq+investq_batq_4_l1*investq_batq+noaq_ch_batq_4_l1* noaq_ch_batq;
+@@END VARIABLE: eptret_bat_4@@
+@@BEGIN VARIABLE: eptret_eat_5@@
+eptret_eat_5=con_eatq_5_l1+etpq_eatq_5_l1*etpq+btpq_eatq_5_l1*btpq
+             +accrq_eatq_5_l1*accrq_eatq+investq_eatq_5_l1*investq_eatq+noaq_ch_aatq_5_l1* noaq_ch_aatq;
+@@END VARIABLE: eptret_eat_5@@
+@@BEGIN VARIABLE: eptret_aat_5@@
+eptret_aat_5=con_aatq_5_l1+etpq_aatq_5_l1*etpq+btpq_aatq_5_l1*btpq
+             +accrq_aatq_5_l1*accrq_aatq+investq_aatq_5_l1*investq_aatq+noaq_ch_aatq_5_l1* noaq_ch_aatq;
+@@END VARIABLE: eptret_aat_5@@
+@@BEGIN VARIABLE: eptret_bat_5@@
+eptret_bat_5=con_batq_5_l1+etpq_batq_5_l1*etpq+btpq_batq_5_l1*btpq
+             +accrq_batq_5_l1*accrq_batq+investq_batq_5_l1*investq_batq+noaq_ch_batq_5_l1* noaq_ch_batq;
+@@END VARIABLE: eptret_bat_5@@
+			 if missing(datadate_l1) then delete;
+format eptret_eat_2 eptret_aat_2 eptret_bat_2 eptret_eat_3 eptret_aat_3 eptret_bat_3
+     eptret_eat_4 eptret_aat_4 eptret_bat_4 eptret_eat_5 eptret_aat_5 eptret_bat_5 percentn8.4;
+keep gvkey permno datadate datadate_l1 eptret_eat_2 eptret_aat_2 eptret_bat_2 eptret_eat_3 eptret_aat_3 eptret_bat_3
+     eptret_eat_4 eptret_aat_4 eptret_bat_4 eptret_eat_5 eptret_aat_5 eptret_bat_5;
+	 run;
+proc sql;
+@@BEGIN VARIABLE: eptret_eat_2_l1@@
+@@BEGIN VARIABLE: eptret_aat_2_l1@@
+@@BEGIN VARIABLE: eptret_bat_2_l1@@
+create table eptretnews as select a.*, b.eptret_eat_2 as eptret_eat_2_l1,  b.eptret_aat_2 as eptret_aat_2_l1, b.eptret_bat_2 as eptret_bat_2_l1, 
+@@END VARIABLE: eptret_eat_2_l1@@
+@@END VARIABLE: eptret_aat_2_l1@@
+@@END VARIABLE: eptret_bat_2_l1@@
+                            b.eptret_eat_3 as eptret_eat_3_l1, b.eptret_aat_3 as eptret_aat_3_l1, b.eptret_bat_3 as eptret_bat_3_l1, 
+                            b.eptret_eat_4 as eptret_eat_4_l1, b.eptret_aat_4 as eptret_aat_4_l1, b.eptret_bat_4 as eptret_bat_4_l1, 
+                            b.eptret_eat_5 as eptret_eat_5_l1, b.eptret_aat_5 as eptret_aat_5_l1, b.eptret_bat_5 as eptret_bat_5_l1
+                            from  eptret as a left join eptret as b
+							on a.permno=b.permno and a.datadate_l1=b.datadate;
+							quit;
+data eptretnews;
+set eptretnews;
+@@BEGIN VARIABLE: eptretnews_eat_2@@
+eptretnews_eat_2=eptret_eat_2-eptret_eat_2_l1;
+@@END VARIABLE: eptretnews_eat_2@@
+@@BEGIN VARIABLE: eptretnews_aat_2@@
+eptretnews_aat_2=eptret_aat_2-eptret_aat_2_l1;
+@@END VARIABLE: eptretnews_aat_2@@
+@@BEGIN VARIABLE: eptretnews_bat_2@@
+eptretnews_bat_2=eptret_bat_2-eptret_bat_2_l1;
+@@END VARIABLE: eptretnews_bat_2@@
+@@BEGIN VARIABLE: eptretnews_eat_3@@
+eptretnews_eat_3=eptret_eat_3-eptret_eat_3_l1;
+@@END VARIABLE: eptretnews_eat_3@@
+@@BEGIN VARIABLE: eptretnews_aat_3@@
+eptretnews_aat_3=eptret_aat_3-eptret_aat_3_l1;
+@@END VARIABLE: eptretnews_aat_3@@
+@@BEGIN VARIABLE: eptretnews_bat_3@@
+eptretnews_bat_3=eptret_bat_3-eptret_bat_3_l1;
+@@END VARIABLE: eptretnews_bat_3@@
+@@BEGIN VARIABLE: eptretnews_eat_4@@
+eptretnews_eat_4=eptret_eat_4-eptret_eat_4_l1;
+@@END VARIABLE: eptretnews_eat_4@@
+@@BEGIN VARIABLE: eptretnews_aat_4@@
+eptretnews_aat_4=eptret_aat_4-eptret_aat_4_l1;
+@@END VARIABLE: eptretnews_aat_4@@
+@@BEGIN VARIABLE: eptretnews_bat_4@@
+eptretnews_bat_4=eptret_bat_4-eptret_bat_4_l1;
+@@END VARIABLE: eptretnews_bat_4@@
+@@BEGIN VARIABLE: eptretnews_eat_5@@
+eptretnews_eat_5=eptret_eat_5-eptret_eat_5_l1;
+@@END VARIABLE: eptretnews_eat_5@@
+@@BEGIN VARIABLE: eptretnews_aat_5@@
+eptretnews_aat_5=eptret_aat_5-eptret_aat_5_l1;
+@@END VARIABLE: eptretnews_aat_5@@
+@@BEGIN VARIABLE: eptretnews_bat_5@@
+eptretnews_bat_5=eptret_bat_5-eptret_bat_5_l1;
+@@END VARIABLE: eptretnews_bat_5@@
+keep gvkey permno datadate datadate_l1 eptretnews_eat_2 eptretnews_aat_2 eptretnews_bat_2 eptretnews_eat_3 eptretnews_aat_3 eptretnews_bat_3
+     eptretnews_eat_4 eptretnews_aat_4 eptretnews_bat_4 eptretnews_eat_5 eptretnews_aat_5 eptretnews_bat_5;
+	 run;
+data vars.eptret;
+set eptret;
+run;
+data vars.eptretnews;
+set eptretnews;
+run;
+proc means data=vars.eptret n mean median p1 p99;
+run;
+proc means data=vars.eptretnews n mean median p1 p99;
+run;
+
+

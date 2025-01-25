@@ -1,0 +1,209 @@
+/***********************************************************************************************************/
+/** 这段代码旨在根据 Penman 和 Zhu (2014) 以及 Penman 和 Yehuda (2019) 的方法，计算季度预期回报率和折现率（预期回报率）新闻。 **/
+/** 代码从 CRSP 月度数据文件（crsp.msf 文件）和 Compustat 季度数据文件（comp.fundq 文件）中提取数据，并进行处理和计算。 **/
+/***********************************************************************************************************/
+
+libname vars "/home/yale/yiliwu/trial/vars_for_use"; 
+%let bgndate = 01JAN2007; /* 选择估计开始日期，输出变量周期前6年 ***/
+%let enddate = 30JUN2021; /* 选择变量结束日期 ***/
+/* 从 CRSP 月度数据文件（crsp.msf 文件）中选择的变量 */
+%let sfilter = 1=1;
+%let msfvars_m = permco permno prc ret vol shrout cfacpr cfacshr;
+%let msevars_m = ncusip exchcd shrcd siccd ;
+%crspmerge(s=m,start=&bgndate,end=&enddate,sfvars=&msfvars_m,sevars=&msevars_m,filters=&sfilter);
+
+/** 从 Compustat 季度数据文件（comp.fundq 文件）中选择的变量 **/
+data comp;
+set comp.fundq;
+where indfmt='INDL' and datafmt='STD' and consol='C' and popsrc='D'
+  and datadate>="&bgndate."d and datadate<="&enddate."d;
+if missing(gvkey) then delete;
+if missing(fyearq) then delete;
+if missing(atq) then delete;
+if atq<=0 then delete;
+mqtr=fyearq*100+fqtr*25;
+keep gvkey mqtr fyearq fqtr datadate CSHOQ PRCCQ ATQ IBQ SPIQ  DVPQ RECTQ INVTQ ACOQ APQ 
+LCOQ DPQ PPENTQ INTANQ  APQ ALTOQ LCOQ LOQ  CEQQ ;
+run;
+proc sort data=comp nodupkey;
+by gvkey mqtr;
+run;
+
+proc sql;
+  create table comp_crsp
+  as select a.gvkey, a.datadate, b.lpermco as permco, b.lpermno as permno
+  from comp as a, crsp.ccmxpf_linktable as b
+  where a.gvkey = b.gvkey and
+  b.LINKTYPE in ("LU","LC") and
+ (b.LINKDT <= a.datadate) and (a.datadate <= b.LINKENDDT or missing(b.LINKENDDT));
+quit;
+proc sort data=comp_crsp nodupkey;
+by permno datadate;
+run;
+
+/***********************************************************************************************************/
+/** 变量综述 **/
+/***********************************************************************************************************/
+
+/* 表格一：已知变量（直接引自数据库） */
+/* | 变量名            | 含义                                      | 数据库来源          | */
+/* |-------------------|-------------------------------------------|---------------------| */
+/* | @@VARIABLE: permco@@permco             | 公司标识符                                | crsp.ccmxpf_linktable | */
+/* | @@VARIABLE: permno@@permno             | CRSP 证券标识符                           | crsp.ccmxpf_linktable | */
+/* | @@VARIABLE: prc@@prc                   | 股票价格                                  | crsp.msf             | */
+/* | @@VARIABLE: ret@@ret                   | 月度股票收益率                            | crsp.msf             | */
+/* | @@VARIABLE: vol@@vol                   | 交易量                                    | crsp.msf             | */
+/* | @@VARIABLE: shrout@@shrout             | 流通股数量                                | crsp.msf             | */
+/* | @@VARIABLE: cfacpr@@cfacpr             | 价格调整因子                              | crsp.msf             | */
+/* | @@VARIABLE: cfacshr@@cfacshr           | 流通股调整因子                            | crsp.msf             | */
+/* | @@VARIABLE: ncusip@@ncusip             | CUSIP 代码                                | crsp.stocknames      | */
+/* | @@VARIABLE: exchcd@@exchcd             | 交易所代码                                | crsp.stocknames      | */
+/* | @@VARIABLE: shrcd@@shrcd               | 股票类别代码                              | crsp.stocknames      | */
+/* | @@VARIABLE: siccd@@siccd               | 标准行业分类代码                          | crsp.stocknames      | */
+/* | @@VARIABLE: gvkey@@gvkey               | 公司标识符                                | comp.fundq           | */
+/* | @@VARIABLE: mqtr@@mqtr                 | 季度标识符                                | comp.fundq           | */
+/* | @@VARIABLE: fyearq@@fyearq             | 财务年度                                  | comp.fundq           | */
+/* | @@VARIABLE: fqtr@@fqtr                 | 财务季度                                  | comp.fundq           | */
+/* | @@VARIABLE: datadate@@datadate         | 数据日期                                  | comp.fundq           | */
+/* | @@VARIABLE: CSHOQ@@CSHOQ               | 季度流通股数量                            | comp.fundq           | */
+/* | @@VARIABLE: PRCCQ@@PRCCQ               | 季度股票价格                              | comp.fundq           | */
+/* | @@VARIABLE: ATQ@@ATQ                   | 季度总资产                                | comp.fundq           | */
+/* | @@VARIABLE: IBQ@@IBQ                   | 季度净利润                                | comp.fundq           | */
+/* | @@VARIABLE: SPIQ@@SPIQ                 | 季度特殊项目                              | comp.fundq           | */
+/* | @@VARIABLE: DVPQ@@DVPQ                 | 季度股利支付                              | comp.fundq           | */
+/* | @@VARIABLE: RECTQ@@RECTQ               | 季度应收账款                              | comp.fundq           | */
+/* | @@VARIABLE: INVTQ@@INVTQ               | 季度存货                                  | comp.fundq           | */
+/* | @@VARIABLE: ACOQ@@ACOQ                 | 季度流动负债                              | comp.fundq           | */
+/* | @@VARIABLE: APQ@@APQ                   | 季度应付账款                              | comp.fundq           | */
+/* | @@VARIABLE: LCOQ@@LCOQ                 | 季度长期负债                              | comp.fundq           | */
+/* | @@VARIABLE: DPQ@@DPQ                   | 季度折旧                                  | comp.fundq           | */
+/* | @@VARIABLE: PPENTQ@@PPENTQ             | 季度固定资产                              | comp.fundq           | */
+/* | @@VARIABLE: INTANQ@@INTANQ             | 季度无形资产                              | comp.fundq           | */
+/* | @@VARIABLE: ALTOQ@@ALTOQ               | 季度其他长期资产                          | comp.fundq           | */
+/* | @@VARIABLE: LOQ@@LOQ                   | 季度其他长期负债                          | comp.fundq           | */
+/* | @@VARIABLE: CEQQ@@CEQQ                 | 季度普通股权益                            | comp.fundq           | */
+
+/* 表格二：计算得到的变量（由已知变量计算得来） */
+/* | 变量名           | 含义                                      | 计算公式                          | */
+/* |------------------|-------------------------------------------|-----------------------------------| */
+/* | @@VARIABLE: mqtr@@mqtr                 | 季度标识符                                | mqtr = fyearq*100 + fqtr*25       | */
+
+/***********************************************************************************************************/
+/** 时间范围 **/
+/***********************************************************************************************************/
+
+/* 表格三：时间范围 */
+/* | 变量名           | 开始日期       | 结束日期       | */
+/* |------------------|----------------|----------------| */
+/* | @@VARIABLE: datadate@@datadate | 01JAN2007      | 30JUN2021      | */
+
+/***********************************************************************************************************/
+/** 变量标记 **/
+/***********************************************************************************************************/
+
+@@BEGIN VARIABLE: permco@@
+@@BEGIN VARIABLE: permno@@
+@@BEGIN VARIABLE: prc@@
+@@BEGIN VARIABLE: ret@@
+@@BEGIN VARIABLE: vol@@
+@@BEGIN VARIABLE: shrout@@
+@@BEGIN VARIABLE: cfacpr@@
+@@BEGIN VARIABLE: cfacshr@@
+@@BEGIN VARIABLE: ncusip@@
+@@BEGIN VARIABLE: exchcd@@
+@@BEGIN VARIABLE: shrcd@@
+@@BEGIN VARIABLE: siccd@@
+@@BEGIN VARIABLE: gvkey@@
+@@BEGIN VARIABLE: mqtr@@
+@@BEGIN VARIABLE: fyearq@@
+@@BEGIN VARIABLE: fqtr@@
+@@BEGIN VARIABLE: datadate@@
+@@BEGIN VARIABLE: CSHOQ@@
+@@BEGIN VARIABLE: PRCCQ@@
+@@BEGIN VARIABLE: ATQ@@
+@@BEGIN VARIABLE: IBQ@@
+@@BEGIN VARIABLE: SPIQ@@
+@@BEGIN VARIABLE: DVPQ@@
+@@BEGIN VARIABLE: RECTQ@@
+@@BEGIN VARIABLE: INVTQ@@
+@@BEGIN VARIABLE: ACOQ@@
+@@BEGIN VARIABLE: APQ@@
+@@BEGIN VARIABLE: LCOQ@@
+@@BEGIN VARIABLE: DPQ@@
+@@BEGIN VARIABLE: PPENTQ@@
+@@BEGIN VARIABLE: INTANQ@@
+@@BEGIN VARIABLE: ALTOQ@@
+@@BEGIN VARIABLE: LOQ@@
+@@BEGIN VARIABLE: CEQQ@@
+
+/***********************************************************************************************************/
+/** 数据处理 **/
+/***********************************************************************************************************/
+
+/* 从 Compustat 季度数据文件（comp.fundq 文件）中选择的变量 */
+data comp;
+set comp.fundq;
+where indfmt='INDL' and datafmt='STD' and consol='C' and popsrc='D'
+  and datadate>="&bgndate."d and datadate<="&enddate."d;
+if missing(gvkey) then delete;
+if missing(fyearq) then delete;
+if missing(atq) then delete;
+if atq<=0 then delete;
+mqtr=fyearq*100+fqtr*25;
+keep gvkey mqtr fyearq fqtr datadate CSHOQ PRCCQ ATQ IBQ SPIQ  DVPQ RECTQ INVTQ ACOQ APQ 
+LCOQ DPQ PPENTQ INTANQ  APQ ALTOQ LCOQ LOQ  CEQQ ;
+run;
+proc sort data=comp nodupkey;
+by gvkey mqtr;
+run;
+
+@@END VARIABLE: permco@@
+@@END VARIABLE: permno@@
+@@END VARIABLE: prc@@
+@@END VARIABLE: ret@@
+@@END VARIABLE: vol@@
+@@END VARIABLE: shrout@@
+@@END VARIABLE: cfacpr@@
+@@END VARIABLE: cfacshr@@
+@@END VARIABLE: ncusip@@
+@@END VARIABLE: exchcd@@
+@@END VARIABLE: shrcd@@
+@@END VARIABLE: siccd@@
+@@END VARIABLE: gvkey@@
+@@END VARIABLE: mqtr@@
+@@END VARIABLE: fyearq@@
+@@END VARIABLE: fqtr@@
+@@END VARIABLE: datadate@@
+@@END VARIABLE: CSHOQ@@
+@@END VARIABLE: PRCCQ@@
+@@END VARIABLE: ATQ@@
+@@END VARIABLE: IBQ@@
+@@END VARIABLE: SPIQ@@
+@@END VARIABLE: DVPQ@@
+@@END VARIABLE: RECTQ@@
+@@END VARIABLE: INVTQ@@
+@@END VARIABLE: ACOQ@@
+@@END VARIABLE: APQ@@
+@@END VARIABLE: LCOQ@@
+@@END VARIABLE: DPQ@@
+@@END VARIABLE: PPENTQ@@
+@@END VARIABLE: INTANQ@@
+@@END VARIABLE: ALTOQ@@
+@@END VARIABLE: LOQ@@
+@@END VARIABLE: CEQQ@@
+
+/***********************************************************************************************************/
+/** 数据处理 **/
+/***********************************************************************************************************/
+
+proc sql;
+  create table comp_crsp
+  as select a.gvkey, a.datadate, b.lpermco as permco, b.lpermno as permno
+  from comp as a, crsp.ccmxpf_linktable as b
+  where a.gvkey = b.gvkey and
+  b.LINKTYPE in ("LU","LC") and
+ (b.LINKDT <= a.datadate) and (a.datadate <= b.LINKENDDT or missing(b.LINKENDDT));
+quit;
+proc sort data=comp_crsp nodupkey;
+by permno datadate;
+run;

@@ -1,0 +1,379 @@
+/* 该代码用于计算事件研究中的短期和长期BHAR（Buy-and-Hold Abnormal Returns） */
+/* 代码分为两部分： */
+/* Part A: 构建市场回报和Barber and Lyon (1997)基准，包括五分位和十分位规模组合基准 */
+/* Part B: 计算事件窗口内的BHAR，相对于事件日期的起始和结束交易日 */
+
+/* 变量综述 */
+/* 表格一：已知变量（直接引自数据库的变量） */
+/* | 变量名       | 含义                                      | 数据库来源          | */
+/* |--------------|-------------------------------------------|---------------------| */
+/* | @@VARIABLE: permno@@permno            | CRSP 证券标识符                           | crsp.msf            | */
+/* | @@VARIABLE: prc@@prc                  | 股票价格                                  | crsp.msf            | */
+/* | @@VARIABLE: ret@@ret                  | 月度股票收益率                            | crsp.msf            | */
+/* | @@VARIABLE: vol@@vol                  | 交易量                                    | crsp.msf            | */
+/* | @@VARIABLE: shrout@@shrout            | 流通股数量                                | crsp.msf            | */
+/* | @@VARIABLE: cfacpr@@cfacpr            | 价格调整因子                              | crsp.msf            | */
+/* | @@VARIABLE: cfacshr@@cfacshr          | 流通股调整因子                            | crsp.msf            | */
+/* | @@VARIABLE: exchcd@@exchcd            | 交易所代码                                | crsp.stocknames     | */
+/* | @@VARIABLE: siccd@@siccd              | 标准行业分类代码                          | crsp.stocknames     | */
+
+/* 表格二：计算得到的变量 */
+/* | 变量名           | 含义                                      | 公式                          | */
+/* |------------------|-------------------------------------------|-------------------------------| */
+/* | @@VARIABLE: P@@P                     | 调整后的股票价格                          | P = abs(prc)/cfacpr            | */
+/* | @@VARIABLE: TSO@@TSO                 | 调整后的总流通股数量                      | TSO = shrout * cfacshr * 1000  | */
+/* | @@VARIABLE: ME@@ME                   | 市值（百万美元）                          | ME = abs(prc) * shrout / 1000  | */
+/* | @@VARIABLE: SIZE@@SIZE               | 公司规模（市值）                          | SIZE = ME                      | */
+/* | @@VARIABLE: r_s05@@r_s05             | 五分位规模组合                            | 根据市值分位计算               | */
+/* | @@VARIABLE: r_s10@@r_s10             | 十分位规模组合                            | 根据市值分位计算               | */
+/* | @@VARIABLE: ret_es05@@ret_es05       | 五分位规模组合的等权重回报                | mean(ret)                      | */
+/* | @@VARIABLE: ret_vs05@@ret_vs05       | 五分位规模组合的市值加权回报              | sum(ret * sizew) / sum(sizew)  | */
+/* | @@VARIABLE: ret_es10@@ret_es10       | 十分位规模组合的等权重回报                | mean(ret)                      | */
+/* | @@VARIABLE: ret_vs10@@ret_vs10       | 十分位规模组合的市值加权回报              | sum(ret * sizew) / sum(sizew)  | */
+/* | @@VARIABLE: cret@@cret               | 累计回报                                  | cumprod(1 + ret) - 1           | */
+/* | @@VARIABLE: bhar_es05@@bhar_es05     | 五分位规模组合的BHAR                      | (cret_end + 1)/(cret_bgn_l1 + 1) - (cret_es05_end + 1)/(cret_es05_bgn_l1 + 1) | */
+/* | @@VARIABLE: bhar_es10@@bhar_es10     | 十分位规模组合的BHAR                      | (cret_end + 1)/(cret_bgn_l1 + 1) - (cret_es10_end + 1)/(cret_es10_bgn_l1 + 1) | */
+/* | @@VARIABLE: bhar_vs05@@bhar_vs05     | 五分位规模组合的市值加权BHAR              | (cret_end + 1)/(cret_bgn_l1 + 1) - (cret_vs05_end + 1)/(cret_vs05_bgn_l1 + 1) | */
+/* | @@VARIABLE: bhar_vs10@@bhar_vs10     | 十分位规模组合的市值加权BHAR              | (cret_end + 1)/(cret_bgn_l1 + 1) - (cret_vs10_end + 1)/(cret_vs10_bgn_l1 + 1) | */
+
+/* 表格三：时间范围 */
+/* | 变量名       | 时间范围          | */
+/* |--------------|-------------------| */
+/* | bgndate      | 01JAN2010         | */
+/* | enddate      | 31DEC2020         | */
+
+/* Step 1. Specifying Options */
+libname vars "/home/yale/yiliwu/trial/bhar/output"; 
+libname input "/home/yale/yiliwu/trial/bhar/input"; 
+
+@@BEGIN VARIABLE: bgndate@@
+%let bgndate = 01JAN2010; /* 选择事件研究数据所需的起始日期 */
+@@END VARIABLE: bgndate@@
+
+@@BEGIN VARIABLE: enddate@@
+%let enddate = 31DEC2020; /* 选择事件研究数据所需的结束日期 */
+@@END VARIABLE: enddate@@
+
+/* Create a CRSP Subsample with Monthly Stock and Event Variables */
+/* Restriction on the type of shares (common stocks only) */
+%let sfilter = (shrcd in (10,11,12));
+
+/* Selected variables from the CRSP monthly data file (crsp.msf file) */
+%let msfvars_m = permco prc ret vol shrout cfacpr cfacshr;
+%let msevars_m = ncusip exchcd shrcd siccd ;
+
+/* Selected variables from the CRSP monthly data file (crsp.dse file) */
+%let msfvars_d = permco prc ret ;
+%let msevars_d =  exchcd shrcd  ;
+
+@@BEGIN VARIABLE: permno@@
+@@BEGIN VARIABLE: prc@@
+@@BEGIN VARIABLE: ret@@
+@@BEGIN VARIABLE: vol@@
+@@BEGIN VARIABLE: shrout@@
+@@BEGIN VARIABLE: cfacpr@@
+@@BEGIN VARIABLE: cfacshr@@
+@@BEGIN VARIABLE: exchcd@@
+@@BEGIN VARIABLE: siccd@@
+
+/* This procedure creates a Monthly CRSP dataset named "CRSP_M"  */
+%crspmerge(s=m,start=&bgndate,end=&enddate,sfvars=&msfvars_m,sevars=&msevars_m,filters=&sfilter);
+%crspmerge(s=d,start=&bgndate,end=&enddate,sfvars=&msfvars_d,sevars=&msevars_d,filters=&sfilter);
+
+@@END VARIABLE: permno@@
+@@END VARIABLE: prc@@
+@@END VARIABLE: ret@@
+@@END VARIABLE: vol@@
+@@END VARIABLE: shrout@@
+@@END VARIABLE: cfacpr@@
+@@END VARIABLE: cfacshr@@
+@@END VARIABLE: exchcd@@
+@@END VARIABLE: siccd@@
+
+/****specify the BHAR window******/
+@@BEGIN VARIABLE: origin@@
+%let origin=50; /* 指定窗口相对于事件日期的起始交易日 */
+@@END VARIABLE: origin@@
+
+@@BEGIN VARIABLE: bgn@@
+%let bgn=0;   /* 指定窗口相对于事件日期的起始交易日 */
+@@END VARIABLE: bgn@@
+
+@@BEGIN VARIABLE: end@@
+%let end=2; /* 指定窗口相对于事件日期的结束交易日 */
+@@END VARIABLE: end@@
+
+@@BEGIN VARIABLE: vbhar@@
+%let vbhar=00_d2;   /* 指定BHAR变量的起始和结束日标记 */
+@@END VARIABLE: vbhar@@
+
+/******specify the event table*****/
+@@BEGIN VARIABLE: in_table@@
+%let in_table=event;  /* 指定事件表 */
+@@END VARIABLE: in_table@@
+
+@@BEGIN VARIABLE: in_edate@@
+%let in_edate=video_dt;  /* 指定事件日期 */
+@@END VARIABLE: in_edate@@
+
+data evt_input;
+set input.&in_table.;
+
+@@BEGIN VARIABLE: edate@@
+edate=&in_edate.;
+format edate date9.;
+@@END VARIABLE: edate@@
+
+keep permno edate;
+run;   
+
+/* Part A starts */
+/* Adjust Share and Price in Monthly Data */
+data crsp_m;
+set crsp_m;
+DATE = INTNX("MONTH",date,0,"E");
+
+@@BEGIN VARIABLE: P@@
+P = abs(prc)/cfacpr;
+@@END VARIABLE: P@@
+
+@@BEGIN VARIABLE: TSO@@
+TSO=shrout*cfacshr*1000;
+if TSO<=0 then TSO=.;
+@@END VARIABLE: TSO@@
+
+@@BEGIN VARIABLE: ME@@
+ME = abs(prc)*shrout/1000;
+@@END VARIABLE: ME@@
+
+label P = "Price at Period End, Adjusted";
+label TSO = "Total Shares Outstanding, Adjusted";
+label ME = "Issue-Level Market Capitalization, x$1m";
+drop ncusip prc cfacpr shrout shrcd;
+format ret percentn8.4 ME P dollar12.3 TSO comma12.;
+run;
+
+data size;
+set crsp_m;
+by permno date;
+if month(date)=6;
+
+@@BEGIN VARIABLE: SIZE@@
+rename me=SIZE;
+@@END VARIABLE: SIZE@@
+run;
+
+proc sort data=size;
+by date size;
+run;
+
+proc univariate data=size noprint;
+where exchcd=1;
+by date;
+var size;
+output out=NYSE pctlpts = 10 to 90 by 10 pctlpre=dec;
+run;
+
+data size;
+merge size NYSE;
+by date;
+
+@@BEGIN VARIABLE: r_s05@@
+if size>0 and size < dec20 then r_s05 = 0;
+else if size >= dec20 and size < dec40 then r_s05 =1;
+else if size >= dec40 and size < dec60 then r_s05 =2;
+else if size >= dec60 and size < dec80 then r_s05 =3;
+else if size >= dec80                  then r_s05 =4;
+@@END VARIABLE: r_s05@@
+
+@@BEGIN VARIABLE: r_s10@@
+if size>0 and size < dec10 then r_s10 = 0;
+else if size >= dec10 and size < dec20 then r_s10 =1;
+else if size >= dec20 and size < dec30 then r_s10 =2;
+else if size >= dec30 and size < dec40 then r_s10 =3;
+else if size >= dec40 and size < dec50 then r_s10 =4;
+else if size >= dec50 and size < dec60 then r_s10 =5;
+else if size >= dec60 and size < dec70 then r_s10 =6;
+else if size >= dec70 and size < dec80 then r_s10 =7;
+else if size >= dec80 and size < dec90 then r_s10 =8;
+else if size >= dec90                  then r_s10 =9;
+@@END VARIABLE: r_s10@@
+
+drop dec10 dec20 dec30 dec40 dec50 dec60 dec70 dec80 dec90;
+label r_s05 = " Quintile Size Portfolio";
+label r_s10 = " Decile Size Portfolio";
+run;
+
+proc sql;
+  create table crsp_d1
+  as select a.*, b.date as formdate "Formation Date", b.r_s05, b.r_s10, b.size as sizew
+  from crsp_d (keep=permno date ret) as a, size as b
+  where a.permno=b.permno and intnx('month', b.date,1,'e')<=a.date<=intnx('month', b.date,12,'e');
+quit;
+
+@@BEGIN VARIABLE: ret_es05@@
+@@BEGIN VARIABLE: ret_vs05@@
+proc sql;
+create table ret_s05 as select date, r_s05, mean(ret) as ret_es05,  sum(ret*sizew)/sum(sizew) as ret_vs05
+from crsp_d1
+where sizew>0
+group by date, r_s05;
+quit;
+@@END VARIABLE: ret_es05@@
+@@END VARIABLE: ret_vs05@@
+
+@@BEGIN VARIABLE: ret_es10@@
+@@BEGIN VARIABLE: ret_vs10@@
+proc sql;
+create table ret_s10 as select date, r_s10, mean(ret) as ret_es10,  sum(ret*sizew)/sum(sizew) as ret_vs10
+from crsp_d1
+where sizew>0
+group by date, r_s10;
+quit;
+@@END VARIABLE: ret_es10@@
+@@END VARIABLE: ret_vs10@@
+
+proc sql;
+create table crsp_d2 as select a.*, b.ret_es05, b.ret_vs05
+from crsp_d1 (keep=permno date ret r_s05 r_s10))as a left join ret_s05 as b
+on a.date=b.date and a.r_s05=b.r_s05;
+quit;
+
+proc sql;
+create table crsp_d2 as select a.*, b.ret_es10, b.ret_vs10
+from crsp_d2 as a left join ret_s10 as b
+on a.date=b.date and a.r_s10=b.r_s10;
+quit;
+
+proc sort data=crsp_d2 nodupkey;
+by permno date;
+run;
+
+@@BEGIN VARIABLE: cret@@
+proc expand data=crsp_d2 out=crsp_output method=none;
+  by permno; id date;
+  convert ret=cret/transformout=(+1 cuprod -1);
+  convert ret_emkt=cret_emkt/transformout=(+1 cuprod -1);
+  convert ret_vmkt=cret_vmkt/transformout=(+1 cuprod -1);
+  convert ret_es05=cret_es05/transformout=(+1 cuprod -1);
+  convert ret_vs05=cret_vs05/transformout=(+1 cuprod -1);
+  convert ret_es10=cret_es10/transformout=(+1 cuprod -1);
+  convert ret_vs10=cret_vs10/transformout=(+1 cuprod -1);
+  convert ret_esb25=cret_esb25/transformout=(+1 cuprod -1);
+  convert ret_vsb25=cret_vsb25/transformout=(+1 cuprod -1);
+  convert ret_esb50=cret_esb50/transformout=(+1 cuprod -1);
+  convert ret_vsb50=cret_vsb50/transformout=(+1 cuprod -1);
+run;
+@@END VARIABLE: cret@@
+
+/****the crsp_output is the table of the daily return of stock and its benchmark*****/
+/****the crsp_output is the end of part A and the input of part B*****/
+/* Part A end */
+
+/* Part B starts */
+data caldates;
+merge crsp.dsi(keep=date rename=(date=origin))
+      crsp.dsi(keep=date firstobs=%eval(&origin.-1) rename=(date=evtdate_l1))
+	   crsp.dsi(keep=date firstobs=%eval(&origin.) rename=(date=evtdate))
+	   crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn.-1) rename=(date=dt_bgn_bhar_l1))
+       crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn.) rename=(date=dt_bgn_bhar))
+       crsp.dsi(keep=date firstobs=%eval(&origin.+&end.) rename=(date=dt_end_bhar));
+  format evtdate evtdate_l1 dt_bgn_bhar_l1 dt_bgn_bhar  dt_end_bhar mmddyy10.;
+
+  @@BEGIN VARIABLE: evtdate@@
+  label evtdate="the trading day of event";
+  @@END VARIABLE: evtdate@@
+
+  @@BEGIN VARIABLE: evtdate_l1@@
+  label evtdate_l1="one trading day prior to the event trading day";
+  @@END VARIABLE: evtdate_l1@@
+
+  @@BEGIN VARIABLE: dt_bgn_bhar_l1@@
+  label dt_bgn_bhar_l1="one trading day prior to the start trading day of BHAR period relative to the event";
+  @@END VARIABLE: dt_bgn_bhar_l1@@
+
+  @@BEGIN VARIABLE: dt_bgn_bhar@@
+  label dt_bgn_bhar="start of BHAR period relative to the event";
+  @@END VARIABLE: dt_bgn_bhar@@
+
+  @@BEGIN VARIABLE: dt_end_bhar@@
+  label dt_end_bhar="start of BHAR period relative to the event";
+  @@END VARIABLE: dt_end_bhar@@
+
+  index+1;
+  if nmiss(evtdate, evtdate_l1,dt_bgn_bhar_l1, dt_bgn_bhar, dt_end_bhar)=0;
+run;
+
+proc sql;
+create table evt_d1 as select a.*, b.evtdate, b.evtdate_l1, b.dt_bgn_bhar_l1, b.dt_bgn_bhar, b.dt_end_bhar, b.index
+from evt_input as  a left join caldates as b
+on a.edate>b.evtdate_l1 and a.edate<=b.evtdate;
+quit;
+
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_bgn_l1
+                                 , b.cret_es05 as cret_es05_bgn_l1, b.cret_vs05 as cret_vs05_bgn_l1
+								 , b.cret_es10 as cret_es10_bgn_l1, b.cret_vs10 as cret_vs10_bgn_l1
+                                  from evt_d1 as a left join crsp_output as b
+								  on a.permno=b.permno and a.dt_bgn_bhar_l1=b.date;
+								  quit;
+
+@@BEGIN VARIABLE: cret_bgn_l1@@
+@@END VARIABLE: cret_bgn_l1@@
+
+@@BEGIN VARIABLE: cret_es05_bgn_l1@@
+@@END VARIABLE: cret_es05_bgn_l1@@
+
+@@BEGIN VARIABLE: cret_vs05_bgn_l1@@
+@@END VARIABLE: cret_vs05_bgn_l1@@
+
+@@BEGIN VARIABLE: cret_es10_bgn_l1@@
+@@END VARIABLE: cret_es10_bgn_l1@@
+
+@@BEGIN VARIABLE: cret_vs10_bgn_l1@@
+@@END VARIABLE: cret_vs10_bgn_l1@@
+
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_end
+                                 , b.cret_es05 as cret_es05_end, b.cret_vs05 as cret_vs05_end
+								 , b.cret_es10 as cret_es10_end, b.cret_vs10 as cret_vs10_end
+                               	 from evt_d1 as a left join crsp_output as b
+								 on a.permno=b.permno and a.dt_end_bhar=b.date;
+								 quit;
+
+@@BEGIN VARIABLE: cret_end@@
+@@END VARIABLE: cret_end@@
+
+@@BEGIN VARIABLE: cret_es05_end@@
+@@END VARIABLE: cret_es05_end@@
+
+@@BEGIN VARIABLE: cret_vs05_end@@
+@@END VARIABLE: cret_vs05_end@@
+
+@@BEGIN VARIABLE: cret_es10_end@@
+@@END VARIABLE: cret_es10_end@@
+
+@@BEGIN VARIABLE: cret_vs10_end@@
+@@END VARIABLE: cret_vs10_end@@
+
+data vars.bhar_sz_&vbhar.;
+set evt_d1;
+
+@@BEGIN VARIABLE: bhar_es05@@
+bhar_es05_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_es05_end+1)/(cret_es05_bgn_l1+1);	
+@@END VARIABLE: bhar_es05@@
+
+@@BEGIN VARIABLE: bhar_es10@@
+bhar_es10_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_es10_end+1)/(cret_es10_bgn_l1+1);
+@@END VARIABLE: bhar_es10@@
+
+@@BEGIN VARIABLE: bhar_vs05@@
+bhar_vs05_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vs05_end+1)/(cret_vs05_bgn_l1+1);	
+@@END VARIABLE: bhar_vs05@@
+
+@@BEGIN VARIABLE: bhar_vs10@@
+bhar_vs10_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vs10_end+1)/(cret_vs10_bgn_l1+1);
+@@END VARIABLE: bhar_vs10@@
+
+keep permno edate evtdate  bhar_es05_&vbhar. bhar_es10_&vbhar. bhar_vs05_&vbhar. bhar_vs10_&vbhar.;
+run;

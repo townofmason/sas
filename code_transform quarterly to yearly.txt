@@ -1,0 +1,216 @@
+/*
+这段代码的主要功能是从多个数据集中提取、处理和合并财务、市场以及机构持股数据，
+生成一个包含公司基本信息、财务指标、市场表现、机构投资者持股情况、以及新闻和8K文件计数的数据集 yothers，
+并将该数据集保存到指定的库中，用于后续分析。
+*/
+
+/*
+表格一：已知变量（直接引自数据库）
+| 变量名      | 含义                                   | 数据库                                                |
+|-------------|----------------------------------------|-------------------------------------------------------|
+| @@VARIABLE: gvkey@@gvkey          | 公司标识符                               | src1.comp_crsp, src1.qfunvar_base, src1.qcnt_8k, src1.qcnt_pressfrom2010to2020, inst_vars  |
+| @@VARIABLE: fyearq@@fyearq         | 财务年度季度                             | src1.comp_crsp, src1.qfunvar_base, src1.qcnt_8k, src1.qcnt_pressfrom2010to2020 |
+| @@VARIABLE: fqtr@@fqtr         | 财务季度                             | src1.comp_crsp|
+| @@VARIABLE: datadate@@datadate      | 数据日期                                 | src1.comp_crsp, src1.qcnt_8k,  src1.qcnt_pressfrom2010to2020                |
+| @@VARIABLE: permno@@permno           | CRSP 证券标识符                          | src1.comp_crsp, inst_vars                          |
+| @@VARIABLE: datadate_l1@@datadate_l1      | 上一期数据日期                     | src1.comp_crsp, src1.qcnt_8k,  src1.qcnt_pressfrom2010to2020                |
+| @@VARIABLE: size_lnat@@size_lnat     | 总资产的自然对数                         | src1.qfunvar_base                               |
+| @@VARIABLE: size_comp@@size_comp     | 公司市值对数(基于compustat)            | src1.qfunvar_base                               |
+| @@VARIABLE: at@@at            | 总资产                                 | src1.qfunvar_base                               |
+| @@VARIABLE: me_comp@@me_comp     | 公司市值(基于compustat)         | src1.qfunvar_base                               |
+| @@VARIABLE: me_crsp@@me_crsp     | 公司市值(基于crsp)                    | src1.qfunvar_base                               |
+| @@VARIABLE: bm1@@bm1            | 账面市值比 1                             | src1.qfunvar_base                               |
+| @@VARIABLE: bm2@@bm2           | 账面市值比 2                            | src1.qfunvar_base                               |
+| @@VARIABLE: bm3@@bm3            | 账面市值比 3                            | src1.qfunvar_base                               |
+| @@VARIABLE: bm4@@bm4            | 账面市值比 4                             | src1.qfunvar_base                               |
+| @@VARIABLE: lev1@@lev1          | 杠杆率 1                              | src1.qfunvar_base                               |
+| @@VARIABLE: lev2@@lev2          | 杠杆率 2                               | src1.qfunvar_base                               |
+| @@VARIABLE: tbq1_se_comp@@tbq1_se_comp  | 托宾Q值 1 (基于市值和股东权益)         | src1.qfunvar_base                               |
+| @@VARIABLE: tbq2_be_comp@@tbq2_be_comp | 托宾Q值 2 (基于市值和账面价值)         | src1.qfunvar_base                               |
+| @@VARIABLE: tbq3_se_crsp@@tbq3_se_crsp | 托宾Q值 3 (基于市值和股东权益)         | src1.qfunvar_base                               |
+| @@VARIABLE: tbq4_be_crsp@@tbq4_be_crsp | 托宾Q值 4 (基于市值和账面价值)          | src1.qfunvar_base                               |
+| @@VARIABLE: spi@@spi         | 特殊项目                                | src1.qfunvar_base                               |
+| @@VARIABLE: cnt_8k@@cnt_8k         | 8K 文件数量                         | src1.qcnt_8k                                   |
+| @@VARIABLE: cnt_press@@cnt_press      | 新闻发布数量                           | src1.qcnt_pressfrom2010to2020                 |
+| @@VARIABLE: dt_13f@@dt_13f          | 13F 文件日期                              | inst_vars                                         |
+| @@VARIABLE: io_lg01_v1@@io_lg01_v1      | 机构持股比例（1%）第一季度  | inst_vars                                         |
+| @@VARIABLE: io_lg05_v1@@io_lg05_v1      | 机构持股比例（5%）第一季度      | inst_vars                                         |
+| @@VARIABLE: io_lg10_v1@@io_lg10_v1      | 机构持股比例（10%）第一季度   | inst_vars                                         |
+| @@VARIABLE: io_totl_v1@@io_totl_v1       | 机构总持股比例  第一季度             | inst_vars                                         |
+| @@VARIABLE: io_lg01_v2@@io_lg01_v2      | 机构持股比例（1%）第二季度  | inst_vars                                         |
+| @@VARIABLE: io_lg05_v2@@io_lg05_v2      | 机构持股比例（5%）第二季度      | inst_vars                                         |
+| @@VARIABLE: io_lg10_v2@@io_lg10_v2      | 机构持股比例（10%）第二季度   | inst_vars                                         |
+| @@VARIABLE: io_totl_v2@@io_totl_v2       | 机构总持股比例  第二季度              | inst_vars                                         |
+| @@VARIABLE: io_numf@@io_numf          | 机构投资者数量                             | inst_vars                                         |
+| @@VARIABLE: afcnt@@afcnt           | 分析师预测数量                           | src1.yafcnt                                         |
+| @@VARIABLE: mqtr@@mqtr           | 季度标识符                   | 计算得出                                         |
+
+
+表格二：计算得到的变量（由已知变量计算得来）
+| 变量名     | 含义                    | 公式                        |
+|------------|-------------------------|-----------------------------|
+| @@VARIABLE: gvkey_id@@gvkey_id    | 公司标识符(数值型)        | gvkey * 1                    |
+| @@VARIABLE: lnpress@@lnpress      | 新闻发布数量的自然对数        | lnpress = log(1 + cnt_press)   |
+| @@VARIABLE: ln8k@@ln8k          | 8K 文件数量的自然对数        | ln8k = log(1 + cnt_8k)    |
+| @@VARIABLE: afcor@@afcor         | 分析师预测数量的自然对数 | afcor=log(1+afcnt)       |
+
+时间范围：
+| 变量名     | 时间范围           |
+|------------|-------------------------|
+|  src1.comp_crsp   | 2011-2020    |
+|   src1.qcnt_pressfrom2010to2020 |  2010-2020 |
+*/
+libname dh "G:\00_wrds studio variables\0001_sas studio code pool\code018_quarterly supplementary codes";
+libname src1 "G:\00_wrds studio variables\0000_variable data pool";
+data inst_vars;
+set src1.inst_vars;
+format dt_13f mmddyy10.;
+run;
+data s1;
+@@BEGIN VARIABLE: fqtr@@
+set src1.comp_crsp;/*****2011-2020******/
+if fyearq>2020 then delete;
+if fyearq<2011 then delete;
+where fqtr=4;
+run;
+@@END VARIABLE: fqtr@@
+proc sql;
+create table s1 as select a.*, b.datadate as datadate_l1
+from s1 as a left join src1.comp_crsp as b
+on a.gvkey=b.gvkey and a.fyearq=b.fyearq+1 and a.fqtr=b.fqtr;
+quit; 
+proc sort data=inst_vars;
+by descending dt_13f;
+run;
+data s1;
+set s1;
+@@BEGIN VARIABLE: gvkey_id@@
+gvkey_id=gvkey*1;
+run;
+@@END VARIABLE: gvkey_id@@
+proc sql;
+create table s1 as select a.*, b.size_lnat, b.size_comp, 
+@@BEGIN VARIABLE: at@@b.at, @@END VARIABLE: at@@
+@@BEGIN VARIABLE: me_comp@@b.me_comp, @@END VARIABLE: me_comp@@
+@@BEGIN VARIABLE: me_crsp@@b.me_crsp, @@END VARIABLE: me_crsp@@
+@@BEGIN VARIABLE: bm1@@b.bm1, @@END VARIABLE: bm1@@
+@@BEGIN VARIABLE: bm2@@b.bm2, @@END VARIABLE: bm2@@
+@@BEGIN VARIABLE: bm3@@b.bm3, @@END VARIABLE: bm3@@
+@@BEGIN VARIABLE: bm4@@b.bm4, @@END VARIABLE: bm4@@
+@@BEGIN VARIABLE: lev1@@b.lev1, @@END VARIABLE: lev1@@
+@@BEGIN VARIABLE: lev2@@b.lev2, @@END VARIABLE: lev2@@
+@@BEGIN VARIABLE: tbq1_se_comp@@b.tbq1_se_comp, @@END VARIABLE: tbq1_se_comp@@
+@@BEGIN VARIABLE: tbq2_be_comp@@b.tbq2_be_comp, @@END VARIABLE: tbq2_be_comp@@
+@@BEGIN VARIABLE: tbq3_se_crsp@@b.tbq3_se_crsp, @@END VARIABLE: tbq3_se_crsp@@
+@@BEGIN VARIABLE: tbq4_be_crsp@@b.tbq4_be_crsp, @@END VARIABLE: tbq4_be_crsp@@
+ b.sp1_end as spi
+from s1 as a  left join src1.qfunvar_base as b
+on a.gvkey_id=b.gvkey and a.fyearq=b.fyearq and a.mqtr=b.mqtr;
+quit;
+data s2;
+set s1;
+keep permno 
+@@BEGIN VARIABLE: gvkey@@gvkey @@END VARIABLE: gvkey@@
+@@BEGIN VARIABLE: fyearq@@fyearq @@END VARIABLE: fyearq@@
+@@BEGIN VARIABLE: datadate@@datadate @@END VARIABLE: datadate@@
+@@BEGIN VARIABLE: datadate_l1@@datadate_l1@@END VARIABLE: datadate_l1@@
+ tbq1_se_comp tbq2_be_comp tbq3_se_crsp tbq4_be_crsp;
+run;
+proc sql;
+create table s3 as select unique a.*, b.datadate as mdatadate, 
+@@BEGIN VARIABLE: cnt_8k@@b.cnt_8k
+@@END VARIABLE: cnt_8k@@
+from s2 as a left join src1.qcnt_8k as b
+on a.gvkey=b.gvkey and a.datadate>=b.datadate and a.datadate_l1<b.datadate;
+quit;
+proc sql;
+create table s5 as select unique gvkey, fyearq, sum(cnt_8k) as cnt_8k
+from s3
+group by gvkey, fyearq;
+quit;
+proc sql;
+create table s1 as select a.*, b.cnt_8k
+from s1 as a left join s5 as b
+on a.gvkey=b.gvkey and a.fyearq=b.fyearq;
+quit;
+/*****lnpress******/
+proc sql;
+create table s3 as select unique a.*, b.datadate as mdatadate, 
+@@BEGIN VARIABLE: cnt_press@@b.cnt_press
+@@END VARIABLE: cnt_press@@
+from s2 as a left join src1.qcnt_pressfrom2010to2020 as b
+on a.gvkey=b.gvkey and a.datadate>=b.datadate and a.datadate_l1<b.datadate;
+quit;
+proc sql;
+create table s5 as select unique gvkey, fyearq, sum(cnt_press) as cnt_press
+from s3
+group by gvkey, fyearq;
+quit;
+proc sql;
+create table s1 as select a.*, b.cnt_press
+from s1 as a left join s5 as b
+on a.gvkey=b.gvkey and a.fyearq=b.fyearq;
+quit;
+/*****institional ownership****/
+proc sql;
+create table s3 as select unique a.*, b.dt_13f as mdatadate, 
+@@BEGIN VARIABLE: io_lg01_v2@@b.io_lg01_v2, @@END VARIABLE: io_lg01_v2@@
+@@BEGIN VARIABLE: io_lg05_v2@@b.io_lg05_v2, @@END VARIABLE: io_lg05_v2@@
+@@BEGIN VARIABLE: io_lg10_v2@@b.io_lg10_v2, @@END VARIABLE: io_lg10_v2@@
+@@BEGIN VARIABLE: io_totl_v2@@b.io_totl_v2, @@END VARIABLE: io_totl_v2@@
+                                    , b.io_lg01_v2, b.io_lg05_v2, b.io_lg10_v2, b.io_totl_v2, 
+@@BEGIN VARIABLE: io_numf@@b.io_numf
+@@END VARIABLE: io_numf@@
+from s2 as a left join inst_vars as b
+on a.permno=b.permno and a.datadate>=b.dt_13f and a.datadate_l1<b.dt_13f;
+quit;
+proc sort data=s3 nodupkey;
+by permno datadate descending mdatadate;
+run;
+proc sort data=s3 nodupkey;
+by permno datadate;
+run;
+proc sql;
+@@BEGIN VARIABLE: io_lg01_v1@@b.io_lg01_v1, @@END VARIABLE: io_lg01_v1@@
+@@BEGIN VARIABLE: io_lg05_v1@@b.io_lg05_v1, @@END VARIABLE: io_lg05_v1@@
+@@BEGIN VARIABLE: io_lg10_v1@@b.io_lg10_v1, @@END VARIABLE: io_lg10_v1@@
+@@BEGIN VARIABLE: io_totl_v1@@b.io_totl_v1, @@END VARIABLE: io_totl_v1@@
+
+create table s1 as select a.*, b.io_lg01_v1, b.io_lg05_v1, b.io_lg10_v1, b.io_totl_v1
+                             , b.io_lg01_v2, b.io_lg05_v2, b.io_lg10_v2, b.io_totl_v2, b.io_numf
+from s1 as a left join s3 as b
+on a.gvkey=b.gvkey and a.fyearq=b.fyearq;
+quit;
+proc sql;
+create table s1 as select unique a.*, 
+@@BEGIN VARIABLE: afcnt@@b.afcnt
+@@END VARIABLE: afcnt@@
+from s1 as a left join src1.yafcnt as b
+on a.gvkey=b.gvkey and a.datadate=b.datadate;
+quit;
+
+data dh.yothers;
+set s1;
+if missing(io_lg01_v1) then io_lg01_v1=0;
+if missing(io_lg01_v2) then io_lg01_v2=0;
+if missing(io_lg05_v1) then io_lg05_v1=0;
+if missing(io_lg05_v2) then io_lg05_v2=0;
+if missing(io_lg10_v1) then io_lg10_v1=0;
+if missing(io_lg10_v2) then io_lg10_v2=0;
+if missing(io_totl_v1) then io_totl_v1=0;
+if missing(io_totl_v2) then io_totl_v2=0;
+if missing(io_numf) then io_numf=0;
+if missing(cnt_8k) then cnt_8k=0;
+if missing(cnt_press) then cnt_press=0;
+if missing(afcnt) then afcnt=0;
+@@BEGIN VARIABLE: lnpress@@
+lnpress=log(1+cnt_press);
+@@END VARIABLE: lnpress@@
+@@BEGIN VARIABLE: ln8k@@
+ln8k=log(1+cnt_8k);
+@@END VARIABLE: ln8k@@
+@@BEGIN VARIABLE: afcor@@
+afcor=log(1+afcnt);
+@@END VARIABLE: afcor@@
+keep gvkey permno datadate  io_lg01_v1 io_lg05_v1 io_lg10_v1 io_totl_v1 io_lg01_v2 io_lg05_v2 io_lg10_v2 io_totl_v2 io_numf lnpress ln8k afcor;
+run;

@@ -1,0 +1,86 @@
+/*
+这段代码主要用于计算公司层面的分部信息披露数量，并生成相应的对数指标。
+它从Compustat数据库中提取分部数据，然后计算每个公司在特定日期披露的分部数量，
+并最终生成一个包含对数分部数量的指标数据集，用于后续分析。
+*/
+
+/*
+变量综述
+表格一：已知变量
+| 变量名     | 含义                                         | 数据库来源             |
+|------------|----------------------------------------------|------------------------|
+| @@VARIABLE: gvkey@@gvkey         | Compustat公司标识符                         | compd.wrds_seg_customer |
+| @@VARIABLE: SRCDATE@@SRCDATE       | 分部报告的披露日期                         | compd.wrds_seg_customer |
+| @@VARIABLE: seg_id@@seg_id        |  Compustat分部唯一标识符              | compd.wrds_seg_customer |
+| @@VARIABLE: STYPE@@STYPE            | 分部类型（如：业务分部、地区分部、运营分部）          | compd.wrds_seg_customer |
+表格二：计算得到的变量
+| 变量名      | 含义                                        | 公式                          |
+|-------------|---------------------------------------------|-------------------------------|
+| @@VARIABLE: branch_cnt@@branch_cnt       | 公司在特定日期披露的分部数量                | count(seg_id)                  |
+| @@VARIABLE: lgseg_1@@lgseg_1   |  对数化分部数量指标，分部类型是"BUSSEG" | log(1+branch_cnt)     |
+| @@VARIABLE: lgseg_2@@lgseg_2   |  对数化分部数量指标，分部类型是"BUSSEG","GEOSEG" | log(1+branch_cnt)      |
+| @@VARIABLE: lgseg_3@@lgseg_3     |  对数化分部数量指标，分部类型是"BUSSEG","GEOSEG","OPSEG" | log(1+branch_cnt)          |
+*/
+
+/*
+时间范围限制
+| 变量名     | 开始时间   | 结束时间   |
+|------------|------------|------------|
+| SRCDATE    | 01JAN2014  | 31DEC2020  |
+*/
+libname output "/home/yale/yiliwu/trial/outputs";
+%let uni_begdt = 01JAN2014;
+%let uni_enddt = 31DEC2020;
+%macro segcnt(begdate= ,enddate=, stypecriteria=,name=);
+* 创建一个临时数据集seg1，筛选出符合条件的分部数据;
+@@BEGIN VARIABLE: seg1@@
+data seg1;
+set compd.wrds_seg_customer;
+where SRCDATE>=&begdate. and SRCDATE<=&enddate. and STYPE in &stypecriteria.;
+keep gvkey SRCDATE seg_id;
+run;
+@@END VARIABLE: seg1@@
+* 对seg1数据集按照gvkey、SRCDATE和seg_id进行排序，并去除重复项;
+proc sort data=seg1 nodupkey;
+by gvkey SRCDATE seg_id;
+run;
+* 创建一个临时数据集seg2，计算每个公司在每个日期披露的分部数量;
+@@BEGIN VARIABLE: seg2@@
+proc sql;
+create table seg2 as select unique gvkey, SRCDATE, count(seg_id) as branch_cnt
+from seg1
+group by gvkey, SRCDATE;
+quit;
+@@END VARIABLE: seg2@@
+* 创建一个数据集seg_&name.,计算分部数量的对数值，并保留gvkey, SRCDATE 和 lgseg_&name.;
+@@BEGIN VARIABLE: lgseg_1@@
+@@BEGIN VARIABLE: lgseg_2@@
+@@BEGIN VARIABLE: lgseg_3@@
+data seg_&name.;
+set seg2;
+lgseg_&name.=log(1+branch_cnt);
+keep gvkey SRCDATE lgseg_&name.;
+run;
+@@END VARIABLE: lgseg_1@@
+@@END VARIABLE: lgseg_2@@
+@@END VARIABLE: lgseg_3@@
+* 对数据集seg_&name.按gvkey和SRCDATE进行排序;
+proc sort data=seg_&name.;
+by gvkey SRCDATE;
+run; 
+%mend;
+%let cond1=("BUSSEG");
+%let cond2=("BUSSEG","GEOSEG");
+%let cond3=("BUSSEG","GEOSEG","OPSEG");
+%segcnt(begdate="&uni_begdt"d ,enddate="&uni_enddt"d, stypecriteria=&cond1. ,name=1);
+%segcnt(begdate="&uni_begdt"d ,enddate="&uni_enddt"d, stypecriteria=&cond2. ,name=2);
+%segcnt(begdate="&uni_begdt"d ,enddate="&uni_enddt"d, stypecriteria=&cond3. ,name=3);
+* 合并seg_1, seg_2, seg_3数据集，并按gvkey和SRCDATE排序;
+data output.lgseg;
+merge seg_1 seg_2 seg_3;
+by gvkey SRCDATE;
+run; 
+* 删除临时数据集seg_1, seg_2, seg_3, seg1和seg2;
+proc sql;
+drop table seg_1, seg_2, seg_3, seg1, seg2;
+quit;

@@ -1,0 +1,652 @@
+*=========================================================;
+* 代码目的：计算高管薪酬对股价和波动率的敏感性（Delta 和 Vega）;
+* 使用 Black-Scholes 模型对股票期权进行估值;
+* 生成最终数据集，包含每个高管的 Delta、Vega 和公司相关财富;
+*=========================================================;
+
+*---------------------------------------------------------;
+* 时间范围;
+*---------------------------------------------------------;
+* 起始年份：2001 年;
+* 结束年份：2020 年;
+* 数据筛选范围：2001 年至 2020 年;
+*---------------------------------------------------------;
+/* 已知变量表格 */
+/* | 变量名                  | 含义                                   | 数据库来源         | */
+/* |-------------------------|----------------------------------------|--------------------| */
+/* | @@VARIABLE: gvkey@@gvkey             | 公司标识符                                | comp.funda          | */
+/* | @@VARIABLE: datadate@@datadate          | 数据日期                                  | comp.funda          | */
+/* | @@VARIABLE: fyear@@fyear               | 财年                                      | comp.funda          | */
+/* | @@VARIABLE: indfmt@@indfmt             | 行业格式（工业）                          | comp.funda          | */
+/* | @@VARIABLE: datafmt@@datafmt            | 数据格式（标准）                          | comp.funda          | */
+/* | @@VARIABLE: popsrc@@popsrc             | 数据来源（D 表示 Compustat）              | comp.funda          | */
+/* | @@VARIABLE: consol@@consol             | 合并报表标志（C 表示合并）                | comp.funda          | */
+/* | @@VARIABLE: permno@@permno             | CRSP 公司标识符                           | crsp.ccmxpf_lnkhist | */
+/* | @@VARIABLE: ret@@ret                   | 月度股票回报                              | crsp.msf            | */
+/* | @@VARIABLE: date@@date                 | 日期                                      | crsp.msf            | */
+/* | @@VARIABLE: coperol@@coperol           | 高管唯一标识符                            | execcomp.anncomp    | */
+/* | @@VARIABLE: execid@@execid             | 高管 ID                                   | execcomp.anncomp    | */
+/* | @@VARIABLE: exec_fullname@@exec_fullname | 高管全名                                  | execcomp.person     | */
+/* | @@VARIABLE: salary@@salary             | 基本工资                                  | execcomp.anncomp    | */
+/* | @@VARIABLE: bonus@@bonus               | 奖金                                      | execcomp.anncomp    | */
+/* | @@VARIABLE: tdc1@@tdc1                 | 总薪酬（包括期权和股票奖励）              | execcomp.anncomp    | */
+/* | @@VARIABLE: option_awards_num@@option_awards_num | 期权奖励数量                           | execcomp.anncomp    | */
+/* | @@VARIABLE: option_awards_blk_value@@option_awards_blk_value | 期权奖励的 Black-Scholes 价值         | execcomp.anncomp    | */
+/* | @@VARIABLE: opts_vested_num@@opts_vested_num | 已归属期权数量                         | execcomp.anncomp    | */
+/* | @@VARIABLE: opts_unvested_num@@opts_unvested_num | 未归属期权数量                         | execcomp.anncomp    | */
+/* | @@VARIABLE: opts_exercised_num@@opts_exercised_num | 已行权期权数量                         | execcomp.anncomp    | */
+/* | @@VARIABLE: shrown@@shrown             | 高管持有的股票数量                        | execcomp.anncomp    | */
+/* | @@VARIABLE: shrowntotal@@shrowntotal    | 高管持有的总股票数量（包括期权）          | execcomp.anncomp    | */
+/* | @@VARIABLE: prccf@@prccf               | 公司股票价格（财年末）                    | execcomp.codirfin   | */
+/* | @@VARIABLE: shrsout@@shrsout           | 流通股数量                                | execcomp.codirfin   | */
+/* | @@VARIABLE: divyield@@divyield          | 股息收益率                                | execcomp.codirfin   | */
+/* | @@VARIABLE: bs_volatility@@bs_volatility | Black-Scholes 波动率                      | execcomp.codirfin   | */
+/* | @@VARIABLE: bs_yield@@bs_yield          | Black-Scholes 股息收益率                  | execcomp.codirfin   | */
+/* | @@VARIABLE: expric@@expric             | 期权行权价格                              | execcomp.stgrttab   | */
+/* | @@VARIABLE: mktpric@@mktpric           | 期权授予时的市场价格                      | execcomp.stgrttab   | */
+/* | @@VARIABLE: numsecur@@numsecur         | 期权数量                                  | execcomp.stgrttab   | */
+/* | @@VARIABLE: exdate@@exdate             | 期权到期日期                              | execcomp.stgrttab   | */
+/* | @@VARIABLE: blkshval@@blkshval         | 期权 Black-Scholes 价值                   | execcomp.stgrttab   | */
+
+/* 计算得出的变量表格 */
+/* | 变量名                  | 含义                                   | 公式                                                                 | */
+/* |-------------------------|----------------------------------------|----------------------------------------------------------------------| */
+/* | @@VARIABLE: sigma@@sigma                 | 股票回报的年化波动率                   | \(\sigma = \text{rollingstd} \times \sqrt{12}\)                     | */
+/* | @@VARIABLE: sigmasq@@sigmasq               | 股票回报波动率的平方                   | \(\text{sigmasq} = \sigma^2\)                                       | */
+/* | @@VARIABLE: Zc_yearend@@Zc_yearend            | Black-Scholes 公式中的 Z 值（财年末）  | \(Z = \frac{\ln(S/X) + (r - q + \sigma^2/2)T}{\sigma \sqrt{T}}\)    | */
+/* | @@VARIABLE: Zc_grantdate@@Zc_grantdate          | Black-Scholes 公式中的 Z 值（授予日）  | \(Z = \frac{\ln(S/X) + (r - q + \sigma^2/2)T}{\sigma \sqrt{T}}\)    | */
+/* | @@VARIABLE: Sc_yearend@@Sc_yearend            | 期权对股价的敏感性（财年末）           | \(S = e^{-qT} \cdot N(Z) \cdot \frac{S}{100} \cdot \text{numsecur}\)| */
+/* | @@VARIABLE: Vc_yearend@@Vc_yearend            | 期权价值（财年末）                     | \(V = \text{numsecur} \cdot (S \cdot e^{-qT} \cdot N(Z) - X \cdot e^{-rT} \cdot N(Z - \sigma \sqrt{T}))\) | */
+/* | @@VARIABLE: Rc_yearend@@Rc_yearend            | 期权对波动率的敏感性（财年末）         | \(R = e^{-qT} \cdot N'(Z) \cdot S \cdot \sqrt{T} \cdot 0.01 \cdot \text{numsecur}\) | */
+/* | @@VARIABLE: delta@@delta                 | 高管薪酬对股价的敏感性                 | \(\text{delta} = \text{Svest} + \text{Sunvest} + \text{Sopts\_grants\_yearend} + \text{Sshr}\) | */
+/* | @@VARIABLE: vega@@vega                  | 高管薪酬对波动率的敏感性               | \(\text{vega} = \text{Rvest} + \text{Runvest} + \text{Ropts\_grants\_yearend}\) | */
+/* | @@VARIABLE: optiondelta@@optiondelta           | 期权对股价的敏感性                     | \(\text{optiondelta} = \text{Svest} + \text{Sunvest} + \text{Sopts\_grants\_yearend}\) | */
+/* | @@VARIABLE: sharedelta@@sharedelta            | 股票对股价的敏感性                     | \(\text{sharedelta} = \text{Sshr}\)                                 | */
+/* | @@VARIABLE: Vopts_yearend@@Vopts_yearend         | 期权组合价值（财年末）                 | \(V = \text{Vvest} + \text{Vunvest} + \text{Vopts\_yearend}\)       | */
+/* | @@VARIABLE: Vportfolio_yearend@@Vportfolio_yearend    | 高管与公司相关的财富                   | \(V = \text{Vvest} + \text{Vunvest} + \text{Vopts\_yearend} + \text{Vshr}\) | */
+/* | @@VARIABLE: maturity_yearend@@maturity_yearend      | 期权到期时间（财年末）                 | \(\text{maturity\_yearend} = \frac{\text{exdate} - \text{fyenddt}}{365}\) | */
+/* | @@VARIABLE: maturity_grantdate@@maturity_grantdate    | 期权到期时间（授予日）                 | \(\text{maturity\_grantdate} = \frac{\text{exdate} - \text{assumed\_grantdate}}{365}\) | */
+/* | @@VARIABLE: Xc@@Xc                    | 期权行权价格                           | \(X = \text{expric}\)                                               | */
+/* | @@VARIABLE: realizable_value@@realizable_value      | 期权的可实现价值                       | \(\text{realizable\_value} = (\text{prccf} - X) \cdot \text{numsecur}\) | */
+/* | @@VARIABLE: rfyearend@@rfyearend              | 财年末的无风险利率                     | \(rfyearend = \text{oneyr}\)                                        | */
+/* | @@VARIABLE: rfunvest@@rfunvest              | 未归属期权的无风险利率                 | \(rfunvest = \text{oneyr}\)                                         | */
+/* | @@VARIABLE: rfvest@@rfvest                | 已归属期权的无风险利率                 | \(rfvest = \text{oneyr}\)                                           | */
+/* | @@VARIABLE: estimated_yield@@estimated_yield      | 估计的股息收益率                       | \(\text{estimated\_yield} = \text{divyield}\)                       | */
+/* | @@VARIABLE: estimated_volatility@@estimated_volatility | 估计的波动率                     | \(\text{estimated\_volatility} = \text{bs\_volatility}\)            | */
+/* | @@VARIABLE: Svest@@Svest                  | 已归属期权对股价的敏感性               | \(Svest = \text{opts\_vested\_num} \times \frac{\text{prccf}}{100}\)| */
+/* | @@VARIABLE: Sunvest@@Sunvest                | 未归属期权对股价的敏感性               | \(Sunvest = \text{opts\_unvested\_num} \times \frac{\text{prccf}}{100}\)| */
+/* | @@VARIABLE: Sopts_grants_yearend@@Sopts_grants_yearend | 期权奖励对股价的敏感性（财年末）     | \(Sopts\_grants\_yearend = \text{option\_awards\_num} \times \frac{\text{prccf}}{100}\)| */
+/* | @@VARIABLE: Rvest@@Rvest                  | 已归属期权对波动率的敏感性             | \(Rvest = \text{opts\_vested\_num} \times \text{sigma} \times \sqrt{\text{maturity\_yearend}}\)| */
+/* | @@VARIABLE: Runvest@@Runvest                | 未归属期权对波动率的敏感性             | \(Runvest = \text{opts\_unvested\_num} \times \text{sigma} \times \sqrt{\text{maturity\_yearend}}\)| */
+/* | @@VARIABLE: Ropts_grants_yearend@@Ropts_grants_yearend | 期权奖励对波动率的敏感性（财年末）   | \(Ropts\_grants\_yearend = \text{option\_awards\_num} \times \text{sigma} \times \sqrt{\text{maturity\_yearend}}\)| */
+
+
+
+
+*=========================================================;
+* 代码目的：计算高管薪酬对股价和波动率的敏感性（Delta 和 Vega）;
+* 使用 Black-Scholes 模型对股票期权进行估值;
+* 生成最终数据集，包含每个高管的 Delta、Vega 和公司相关财富;
+*=========================================================;
+
+*---------------------------------------------------------;
+* 时间范围;
+*---------------------------------------------------------;
+* 起始年份：2001 年;
+* 结束年份：2020 年;
+* 数据筛选范围：2001 年至 2020 年;
+*---------------------------------------------------------;
+
+%let start_year=2001;  /* 定义起始年份 */
+%let end_year=2020;    /* 定义结束年份 */
+
+@@BEGIN VARIABLE: gvkey@@
+@@BEGIN VARIABLE: datadate@@
+@@BEGIN VARIABLE: fyear@@
+@@BEGIN VARIABLE: indfmt@@
+@@BEGIN VARIABLE: datafmt@@
+@@BEGIN VARIABLE: popsrc@@
+@@BEGIN VARIABLE: consol@@
+/* 从 comp.funda 数据集中提取指定年份的数据，并生成 comp1 数据集 */
+data comp1;
+   set comp.funda;
+   where &start_year-6 <= fyear <= &end_year  /* 筛选出在起始年份前6年到结束年份之间的数据 */
+      and indfmt='INDL' and datafmt='STD' and popsrc='D' and consol='C';  /* 筛选特定格式的数据 */
+   fyenddt=datadate;  /* 将 datadate 赋值给 fyenddt，表示财年结束日期 */
+   fybegdt=intnx('month', fyenddt, -11, 'beg');  /* 计算财年开始日期，即财年结束日期前11个月的月初 */
+   format fyenddt fybegdt date9.;  /* 格式化日期变量 */
+   keep gvkey datadate fyear fybegdt fyenddt;  /* 保留需要的变量 */
+   rename fyear=year;  /* 将 fyear 重命名为 year */
+run;
+@@END VARIABLE: gvkey@@
+@@END VARIABLE: datadate@@
+@@END VARIABLE: fyear@@
+@@END VARIABLE: indfmt@@
+@@END VARIABLE: datafmt@@
+@@END VARIABLE: popsrc@@
+@@END VARIABLE: consol@@
+
+
+@@BEGIN VARIABLE: permno@@
+/* 对 comp1 数据集按 gvkey 和 datadate 排序 */
+proc sort data=comp1; 
+   by gvkey datadate; 
+run;
+
+/* 将 comp1 数据集与 crsp.ccmxpf_lnkhist 数据集进行连接，生成 combined_for_wrds 数据集 */
+proc sql;
+  create table combined_for_wrds as 
+  select a.*, b.lpermno as permno  /* 从 comp1 和 crsp.ccmxpf_lnkhist 中选择数据，并添加 permno 变量 */
+  from comp1 as a, crsp.ccmxpf_lnkhist as b
+  where a.gvkey=b.gvkey  /* 通过 gvkey 连接两个数据集 */
+    and b.linkprim in ('P', 'C')  /* 筛选 linkprim 为 'P' 或 'C' 的记录 */
+    and b.LINKTYPE in ('LU', 'LC')  /* 筛选 LINKTYPE 为 'LU' 或 'LC' 的记录 */
+    and (b.LINKDT <= a.fyenddt or missing(b.LINKDT))  /* 筛选 LINKDT 小于等于 fyenddt 的记录 */
+    and (a.fyenddt <= b.LINKENDDT or missing(b.LINKENDDT))  /* 筛选 fyenddt 小于等于 LINKENDDT 的记录 */
+  order by gvkey, datadate;  /* 按 gvkey 和 datadate 排序 */
+quit;
+@@END VARIABLE: permno@@
+
+@@BEGIN VARIABLE: ret@@
+@@BEGIN VARIABLE: date@@
+/* 将 combined_for_wrds 数据集与 crsp.msf 数据集连接，生成 crsp1 数据集 */
+proc sql;
+  create table crsp1 as 
+  select a.*, b.date, b.ret label=''  /* 从 combined_for_wrds 和 crsp.msf 中选择数据，并添加 date 和 ret 变量 */
+  from combined_for_wrds as a, crsp.msf as b
+  where a.permno = b.permno  /* 通过 permno 连接两个数据集 */
+    and intck('month', b.date, a.fybegdt) between 1 and 60  /* 筛选 date 在 fybegdt 前1到60个月的记录 */
+  order by gvkey, datadate, date;  /* 按 gvkey, datadate 和 date 排序 */
+quit;
+@@END VARIABLE: ret@@
+@@END VARIABLE: date@@
+
+@@BEGIN VARIABLE: sigma@@
+@@BEGIN VARIABLE: sigmasq@@
+/* 计算月度股票收益的波动率，生成 exec_roll_vol_fyear 数据集 */
+proc means data=crsp1 noprint;
+  var ret;  /* 分析 ret 变量 */
+  by gvkey datadate year;  /* 按 gvkey, datadate 和 year 分组 */
+  output out=exec_roll_vol_fyear n=nrollingstd std=rollingstd;  /* 输出滚动标准差 */
+run;
+@@END VARIABLE: sigma@@
+@@END VARIABLE: sigmasq@@
+
+@@BEGIN VARIABLE: coperol@@
+@@BEGIN VARIABLE: execid@@
+@@BEGIN VARIABLE: exec_fullname@@
+@@BEGIN VARIABLE: salary@@
+@@BEGIN VARIABLE: bonus@@
+@@BEGIN VARIABLE: tdc1@@
+@@BEGIN VARIABLE: option_awards_num@@
+@@BEGIN VARIABLE: option_awards_blk_value@@
+@@BEGIN VARIABLE: opts_vested_num@@
+@@BEGIN VARIABLE: opts_unvested_num@@
+@@BEGIN VARIABLE: opts_exercised_num@@
+@@BEGIN VARIABLE: shrown@@
+@@BEGIN VARIABLE: shrowntotal@@
+/* 从 execcomp.anncomp 数据集中提取指定年份的高管薪酬数据，生成 anncomp 数据集 */
+data anncomp;
+  set execcomp.anncomp;
+  where &start_year <= year <= &end_year;  /* 筛选指定年份的数据 */
+  coperol=co_per_rol;  /* 重命名变量 */
+  shrown=SHROWN_EXCL_OPTS;  /* 重命名变量 */
+  shrowntotal=SHROWN_TOT;  /* 重命名变量 */
+  opts_unvested_num=OPT_UNEX_UNEXER_NUM;  /* 重命名变量 */
+  opts_unvested_val=OPT_UNEX_UNEXER_EST_VAL;  /* 重命名变量 */
+  opts_vested_num=OPT_UNEX_EXER_NUM;  /* 重命名变量 */
+  opts_vested_val=OPT_UNEX_EXER_EST_VAL;  /* 重命名变量 */
+  opts_exercised_num= OPT_EXER_NUM;  /* 重命名变量 */
+  keep gvkey coperol year execid allothpd allothtot bonus 
+    eip_unearn_num eip_unearn_val noneq_incent old_datafmt_flag
+    OPTION_AWARDS_BLK_VALUE 
+    OPTION_AWARDS_FV OPTION_AWARDS_NUM OPTION_AWARDS_RPT_VALUE 
+    OPTION_AWARDS  opts_exercised_num
+    opts_vested_val 
+    opts_vested_num opts_unvested_val
+    opts_unvested_num  OTHANN OTHCOMP  
+    RSTKGRNT   SALARY   
+    SHROWN  shrowntotal  SHRS_VEST_NUM 
+    SHRS_VEST_VAL  STOCK_AWARDS_FV  STOCK_AWARDS 
+    STOCK_UNVEST_NUM  STOCK_UNVEST_VAL 
+    TDC1  TITLEANN ltip ceoann defer_rpt_as_comp_tot;  /* 保留需要的变量 */
+  proc sort nodupkey;  /* 去重 */
+  by coperol year;  /* 按 coperol 和 year 排序 */
+run;
+@@END VARIABLE: coperol@@
+@@END VARIABLE: execid@@
+@@END VARIABLE: exec_fullname@@
+@@END VARIABLE: salary@@
+@@END VARIABLE: bonus@@
+@@END VARIABLE: tdc1@@
+@@END VARIABLE: option_awards_num@@
+@@END VARIABLE: option_awards_blk_value@@
+@@END VARIABLE: opts_vested_num@@
+@@END VARIABLE: opts_unvested_num@@
+@@END VARIABLE: opts_exercised_num@@
+@@END VARIABLE: shrown@@
+@@END VARIABLE: shrowntotal@@
+
+@@BEGIN VARIABLE: prccf@@
+@@BEGIN VARIABLE: shrsout@@
+@@BEGIN VARIABLE: divyield@@
+@@BEGIN VARIABLE: bs_volatility@@
+@@BEGIN VARIABLE: bs_yield@@
+/* 从 execcomp.codirfin 数据集中提取公司财务信息，生成 codirfin 数据集 */
+data codirfin;
+  set execcomp.codirfin (keep = gvkey year bs_volatility bs_yield divyield shrsout prccf fyr srcdate);
+  execcomp_volatility = bs_volatility;  /* 重命名变量 */
+  execcomp_yield=bs_yield/100;  /* 将 bs_yield 转换为小数形式 */
+  divyield=divyield/100;  /* 将 divyield 转换为小数形式 */
+  keep gvkey year divyield execcomp_volatility execcomp_yield prccf shrsout srcdate fyr;  /* 保留需要的变量 */
+  proc sort nodupkey;  /* 去重 */
+  by gvkey year;  /* 按 gvkey 和 year 排序 */
+run;
+@@END VARIABLE: prccf@@
+@@END VARIABLE: shrsout@@
+@@END VARIABLE: divyield@@
+@@END VARIABLE: bs_volatility@@
+@@END VARIABLE: bs_yield@@
+
+@@BEGIN VARIABLE: expric@@
+@@BEGIN VARIABLE: mktpric@@
+@@BEGIN VARIABLE: numsecur@@
+@@BEGIN VARIABLE: exdate@@
+@@BEGIN VARIABLE: blkshval@@
+/* 从 execcomp.stgrttab 数据集中提取股票和期权奖励信息，生成 stgrttab 数据集 */
+data stgrttab;
+  set execcomp.stgrttab;
+  coperol=co_per_rol;  /* 重命名变量 */
+  keep coperol year blkshval exdate expric grntnum mktpric numsecur;  /* 保留需要的变量 */
+  proc sort nodupkey;  /* 去重 */
+  by coperol year grntnum;  /* 按 coperol, year 和 grntnum 排序 */
+run;
+@@END VARIABLE: expric@@
+@@END VARIABLE: mktpric@@
+@@END VARIABLE: numsecur@@
+@@END VARIABLE: exdate@@
+@@END VARIABLE: blkshval@@
+
+@@BEGIN VARIABLE: Zc_yearend@@
+@@BEGIN VARIABLE: Zc_grantdate@@
+@@BEGIN VARIABLE: Sc_yearend@@
+@@BEGIN VARIABLE: Vc_yearend@@
+@@BEGIN VARIABLE: Rc_yearend@@
+@@BEGIN VARIABLE: delta@@
+@@BEGIN VARIABLE: vega@@
+@@BEGIN VARIABLE: optiondelta@@
+@@BEGIN VARIABLE: sharedelta@@
+@@BEGIN VARIABLE: Vopts_yearend@@
+@@BEGIN VARIABLE: Vportfolio_yearend@@
+@@BEGIN VARIABLE: maturity_yearend@@
+@@BEGIN VARIABLE: maturity_grantdate@@
+@@BEGIN VARIABLE: Xc@@
+@@BEGIN VARIABLE: realizable_value@@
+/* 计算当前年度期权的敏感性，生成 excomp11 数据集 */
+data excomp11;
+  set excomp10;
+  * 如果 numsecur 缺失且其他相关变量也缺失，则将 numsecur 设为 0;
+  if numsecur=. and (exdate=. and expric=. and mktpric=.
+    and option_awards_num=0) then numsecur=0;
+
+  * 计算期权的行权价格;
+  Xc = expric;
+
+  * 计算期权的可实现价值;
+  realizable_value = (prccf-Xc)*numsecur;
+  if realizable_value<0 then realizable_value=0;  * 如果可实现价值为负，则设为 0;
+  if mktpric=. or Xc=. or numsecur=. then realizable_value=.;  * 如果相关变量缺失，则设为缺失值;
+
+  * 计算期权的 Z 值;
+  Zc_yearend = (log(prccf/Xc)+maturity_yearend*(rfc-bs_yield+sigmasq/2))/(sigma*sqrt(maturity_yearend));
+  if maturity_yearend=. then Zc_yearend=.;
+
+  Zc_grantdate= (log(mktpric/Xc)+maturity_grantdate*(rfc-bs_yield+sigmasq/2))/(sigma*sqrt(maturity_grantdate));
+  if maturity_grantdate=. then Zc_grantdate=.;
+
+  * 计算期权的敏感性;
+  Sc_yearend = exp(-bs_yield*maturity_yearend)*probnorm(Zc_yearend)*numsecur*prccf/100;
+  if Zc_yearend=. then Sc_yearend=.;
+  if numsecur=0 then Sc_yearend=0;
+
+  * 计算期权的 Black-Scholes 价值;
+  Vc_grantdate = numsecur*(mktpric*exp(-bs_yield* maturity_grantdate)*probnorm(Zc_grantdate)
+               -Xc*exp(-rfc* maturity_grantdate)*probnorm(Zc_grantdate-sigma*sqrt( maturity_grantdate)));
+  if Zc_grantdate=. then Vc_grantdate=.;
+  if numsecur=0 then Vc_grantdate=0;
+
+  * 计算期权的年末价值;
+  if Zc_yearend^=. then do;
+    Vc_yearend = numsecur*(prccf*exp(-bs_yield*maturity_yearend)*probnorm(Zc_yearend)
+                 -Xc*exp(-rfc*maturity_yearend)*probnorm(Zc_yearend-sigma*sqrt(maturity_yearend)));
+  end;
+  if numsecur=0 then Vc_yearend=0;
+
+  * 计算期权的波动率敏感性;
+  if Zc_yearend^=. then do;
+    Rc_yearend = exp(-bs_yield* maturity_yearend)*PDF('normal',Zc_yearend,0,1)*prccf*sqrt( maturity_yearend)*0.01*numsecur;
+  end;
+  if Zc_yearend=. then Rc_yearend=.;
+  if numsecur=0 then Rc_yearend=0;
+run;
+@@END VARIABLE: Zc_yearend@@
+@@END VARIABLE: Zc_grantdate@@
+@@END VARIABLE: Sc_yearend@@
+@@END VARIABLE: Vc_yearend@@
+@@END VARIABLE: Rc_yearend@@
+@@END VARIABLE: delta@@
+@@END VARIABLE: vega@@
+@@END VARIABLE: optiondelta@@
+@@END VARIABLE: sharedelta@@
+@@END VARIABLE: Vopts_yearend@@
+@@END VARIABLE: Vportfolio_yearend@@
+@@END VARIABLE: maturity_yearend@@
+@@END VARIABLE: maturity_grantdate@@
+@@END VARIABLE: Xc@@
+@@END VARIABLE: realizable_value@@
+
+* 将期权数据按 coperol 和 year 汇总，生成 excomp12 数据集;
+proc sql;
+  create table excomp12 as 
+  select *, sum(Vc_grantdate) as Vopts_grantdate,  * 计算授予日期的期权总价值;
+     sum(Vc_yearend) as Vopts_yearend,  * 计算年末的期权总价值;
+     sum(numsecur) as sumnumsecur,  * 计算期权总数;
+     sum(Sc_yearend) as Sopts_grants_yearend,  * 计算期权的敏感性总和;
+     sum(Rc_yearend) as Ropts_grants_yearend,  * 计算期权的波动率敏感性总和;
+     sum(realizable_value) as sumrealizable_value  * 计算期权的可实现价值总和;
+  from excomp11
+  group by coperol,year;  * 按 coperol 和 year 分组;
+quit;
+
+* 对 excomp12 数据集进行处理，生成 excomp13 数据集;
+data excomp13;
+  set excomp12;
+  * 如果 sumnumsecur 为 0 或缺失，则将相关变量设为 0;
+  if sumnumsecur=0 or sumnumsecur=. then do;
+    Sopts_grants_yearend=0;
+    Vopts_grantdate=0;
+    Ropts_grants_yearend=0;
+    sumrealizable_value=0;
+    Vopts_yearend=0;
+    FVopts_yearend=0;
+  end;
+
+  * 保留需要的变量;
+  keep coperol year Vopts_yearend sumnumsecur Sopts_grants_yearend  
+    Ropts_grants_yearend sumrealizable_value sigma sigmasq bs_yield option_awards_num 
+    opts_vested_num opts_unvested_num opts_exercised_num
+    opts_vested_val opts_unvested_val shrown shrsout old_datafmt_flag avg_mat_yearend prccf
+    fybegdt fyenddt oneyr twoyr threeyr fouryr fiveyr sixyr sevenyr eightyr nineyr tenyr exec_fullname;
+
+  proc sort nodupkey;  * 去重;
+  by coperol year;  * 按 coperol 和 year 排序;
+run;
+
+* 对 excomp13 数据集进行处理，生成 excomp13a 数据集;
+data excomp13a;
+  set excomp13;
+  * 计算滞后变量;
+  lcoperol=lag(coperol);
+  lyear=lag(year)+1;
+  lag_opts_vested_num=lag(opts_vested_num);
+  lag_opts_unvested_num=lag(opts_unvested_num);
+  if coperol^=lcoperol or year^=lyear then do;
+    lag_opts_vested_num=. ; lag_opts_unvested_num=.;
+  end;
+  drop lcoperol lyear ;  * 删除中间变量;
+run;
+
+* 对 excomp13a 数据集进行处理，生成 excomp13b 数据集;
+data excomp13b;
+  set excomp13a;
+  * 如果 opts_unvested_num 或 opts_unvested_val 为负，则设为 0;
+  if opts_unvested_num<0 and opts_unvested_num^=. then opts_unvested_num=0;
+  if opts_unvested_val<0 and opts_unvested_val^=. then opts_unvested_val=0;
+  if opts_vested_num<0 and opts_vested_num^=. then opts_vested_num=0;
+  if opts_vested_val<0 and opts_vested_val^=. then opts_vested_val=0;
+
+  * 计算未行权期权的数量和价值;
+  opts_unvested_num_excl_curryear = opts_unvested_num - option_awards_num;
+  opts_unvested_val_excl_curryear = opts_unvested_val - sumrealizable_value;
+  opts_vested_num_excl_curryear =  opts_vested_num;
+  opts_vested_val_excl_curryear =  opts_vested_val;
+
+  * 如果未行权期权的数量为负，则设为 0;
+  if opts_unvested_num_excl_curryear^=. and opts_unvested_num_excl_curryear<0 then do;
+    opts_unvested_num_excl_curryear=0;
+    opts_unvested_val_excl_curryear =0;
+    opts_vested_num_excl_curryear= opts_vested_num + (opts_unvested_num - option_awards_num);
+    opts_vested_val_excl_curryear= opts_vested_val + (opts_unvested_val - sumrealizable_value);
+  end;
+
+  * 如果未行权期权的价值为负，则设为 0;
+  if opts_unvested_val_excl_curryear^=. and opts_unvested_val_excl_curryear<0 then opts_unvested_val_excl_curryear=0;
+run;
+
+* 对 excomp13b 数据集进行处理，生成 excomp13c 数据集;
+data excomp13c;
+  set excomp13b;
+  * 如果 opts_vested_num_excl_curryear 为负，则根据条件设为 0 或缺失值;
+  if opts_vested_num_excl_curryear<0 and opts_vested_num_excl_curryear^=. then 
+    if round((opts_unvested_num + opts_vested_num),0.1)=round((LAG_opts_unvested_num + LAG_opts_vested_num + OPTION_AWARDS_NUM - opts_exercised_num),0.1) 
+      then do;
+        opts_vested_num_excl_curryear=0; opts_vested_val_excl_curryear=0;
+        DUMMY1=1;
+      end;
+
+  * 如果条件不满足，则将相关变量设为缺失值;
+  if opts_vested_num_excl_curryear<0 and opts_vested_num_excl_curryear^=. then 
+    if round((opts_unvested_num + opts_vested_num),0.1)^=round((LAG_opts_unvested_num + LAG_opts_vested_num + OPTION_AWARDS_NUM - opts_exercised_num),0.1) 
+      then do;
+        opts_unvested_num_excl_curryear=.; opts_unvested_val_excl_curryear=.;
+        opts_vested_num_excl_curryear=.; opts_vested_val_excl_curryear=.;
+        DUMMY2=1;
+      end;
+
+  * 如果 opts_vested_val_excl_curryear 为负，则设为 0;
+  if opts_vested_val_excl_curryear<0 and opts_vested_val_excl_curryear^=. then opts_vested_val_excl_curryear=0;
+run;
+
+* 对 excomp13c 数据集进行处理，生成 excomp14 数据集;
+data excomp14;
+  set excomp13c;
+  * 计算未行权期权的到期时间;
+  if option_awards_num^=. and option_awards_num>0 then matunvest=avg_mat_yearend-1;
+  else matunvest=9;
+  if matunvest<0 and matunvest^=. then matunvest=0.001;
+
+  * 根据到期时间选择无风险利率;
+  if round(matunvest,1) <=1 then rfunvest=oneyr;
+  if round(matunvest,1) =2  then rfunvest=twoyr;
+  if round(matunvest,1) =3  then rfunvest=threeyr;
+  if round(matunvest,1) =4  then rfunvest=fouryr;
+  if round(matunvest,1) =5  then rfunvest=fiveyr;
+  if round(matunvest,1) =6  then rfunvest=sixyr;
+  if round(matunvest,1) =7  then rfunvest=sevenyr;
+  if round(matunvest,1) =8  then rfunvest=eightyr;
+  if round(matunvest,1) =9  then rfunvest=nineyr;
+  if round(matunvest,1)=10  then rfunvest=tenyr;
+
+  * 如果到期时间大于 10 年，则使用 10 年期利率;
+  if (matunvest^=. and round(matunvest,1)>1) then rfunvest=tenyr;
+
+  * 计算未行权期权的行权价格;
+  if opts_unvested_num_excl_curryear^=0 then 
+    Xunvest=prccf-(opts_unvested_val_excl_curryear/opts_unvested_num_excl_curryear);
+  if (Xunvest<0 and Xunvest^=.) then Xunvest=0.01;
+
+  * 计算未行权期权的 Z 值;
+  Zunvest = (log(prccf/Xunvest)+ matunvest*(rfunvest-bs_yield+sigmasq/2))/(sigma*sqrt(matunvest));
+  if matunvest=. or matunvest<0 then Zunvest=.;
+  if opts_unvested_val_excl_curryear=. or opts_unvested_val_excl_curryear<0 
+    or opts_unvested_num_excl_curryear<0 or opts_unvested_num_excl_curryear=. then Zunvest=.;
+
+  * 计算未行权期权的敏感性;
+  Sunvest = exp(-bs_yield* matunvest)*probnorm(Zunvest)*(prccf/100)*opts_unvested_num_excl_curryear;
+  if Zunvest=. then Sunvest=.;
+
+  * 计算未行权期权的波动率敏感性;
+  if Zunvest^=. then do;
+    Runvest = exp(-bs_yield* matunvest)*PDF('normal',Zunvest,0,1)*prccf*sqrt( matunvest)*0.01*opts_unvested_num_excl_curryear;
+  end;
+  if Zunvest=. then Runvest=.;
+
+  * 计算未行权期权的 Black-Scholes 价值;
+  Vunvest = opts_unvested_num_excl_curryear*(prccf*exp(-bs_yield* matunvest)*probnorm(Zunvest)
+                     -Xunvest*exp(-rfunvest* matunvest)*probnorm(Zunvest-sigma*sqrt( matunvest)));
+  if opts_unvested_num_excl_curryear=. or Zunvest=. then Vunvest=.;
+
+  * 计算行权期权的到期时间;
+  matvest=matunvest-3;
+  if matvest<0 and matvest^=. then matvest=0.001;
+
+  * 计算行权期权的行权价格;
+  Xvest=prccf-(opts_vested_val_excl_curryear/opts_vested_num_excl_curryear);
+  if (Xvest<0 and Xvest^=.) then Xvest=0.01;
+
+  * 根据到期时间选择无风险利率;
+  if round(matvest,1) <=1 then rfvest=oneyr;
+  if round(matvest,1) =2  then rfvest=twoyr;
+  if round(matvest,1) =3  then rfvest=threeyr;
+  if round(matvest,1) =4  then rfvest=fouryr;
+  if round(matvest,1) =5  then rfvest=fiveyr;
+  if round(matvest,1) =6  then rfvest=sixyr;
+  if round(matvest,1) =7  then rfvest=sevenyr;
+  if round(matvest,1) =8  then rfvest=eightyr;
+  if round(matvest,1) =9  then rfvest=nineyr;
+  if round(matvest,1)=10  then rfvest=tenyr;
+
+  * 如果到期时间大于 10 年，则使用 10 年期利率;
+  if (matvest^=. and round(matvest,10)>10) then rfvest=tenyr;
+
+  * 计算行权期权的 Z 值;
+  Zvest = (log(prccf/Xvest)+ matvest*(rfvest-bs_yield+sigmasq/2))/(sigma*sqrt(matvest));
+  if matvest=. or matvest<0 then Zvest=.;
+  if opts_vested_val_excl_curryear=. or opts_vested_val_excl_curryear<0 
+    or opts_vested_num_excl_curryear<0 or opts_vested_num_excl_curryear=. then Zvest=.;
+
+  * 计算行权期权的敏感性;
+  Svest = exp(-bs_yield* matvest)*probnorm(Zvest)*(prccf/100)*opts_vested_num_excl_curryear;
+
+  * 计算行权期权的波动率敏感性;
+  if Zvest^=. then do;
+    Rvest = exp(-bs_yield* matvest)*PDF('normal',Zvest,0,1)*prccf*sqrt( matvest)*0.01*opts_vested_num_excl_curryear;
+  end;
+  if Zvest=. then Rvest=.;
+
+  * 计算行权期权的 Black-Scholes 价值;
+  Vvest = opts_vested_num_excl_curryear*(prccf*exp(-bs_yield*matvest)*probnorm(Zvest)
+                     -Xvest*exp(-rfvest*matvest)*probnorm(Zvest-sigma*sqrt(matvest)));
+  if opts_vested_num_excl_curryear=. or Zvest=. then Vvest=.;
+
+* 计算持股的敏感性;
+@@BEGIN VARIABLE: Sshr@@
+Sshr = shrown * prccf / 100;
+@@END VARIABLE: Sshr@@
+
+* 计算持股的价值;
+@@BEGIN VARIABLE: Vshr@@
+Vshr = shrown * prccf;
+@@END VARIABLE: Vshr@@
+
+* 计算已归属期权对股价的敏感性;
+@@BEGIN VARIABLE: Svest@@
+Svest = opts_vested_num * prccf / 100;
+@@END VARIABLE: Svest@@
+
+* 计算未归属期权对股价的敏感性;
+@@BEGIN VARIABLE: Sunvest@@
+Sunvest = opts_unvested_num * prccf / 100;
+@@END VARIABLE: Sunvest@@
+
+* 计算期权奖励对股价的敏感性（财年末）;
+@@BEGIN VARIABLE: Sopts_grants_yearend@@
+Sopts_grants_yearend = option_awards_num * prccf / 100;
+@@END VARIABLE: Sopts_grants_yearend@@
+
+* 计算总敏感性;
+@@BEGIN VARIABLE: delta@@
+delta = sum(Svest, Sunvest, Sopts_grants_yearend, Sshr);
+@@END VARIABLE: delta@@
+
+* 计算期权对股价的敏感性;
+@@BEGIN VARIABLE: optiondelta@@
+optiondelta = sum(Svest, Sunvest, Sopts_grants_yearend);
+@@END VARIABLE: optiondelta@@
+
+* 计算股票对股价的敏感性;
+@@BEGIN VARIABLE: sharedelta@@
+sharedelta = Sshr;
+@@END VARIABLE: sharedelta@@
+
+* 计算已归属期权对波动率的敏感性;
+@@BEGIN VARIABLE: Rvest@@
+Rvest = opts_vested_num * sigma * sqrt(maturity_yearend);
+@@END VARIABLE: Rvest@@
+
+* 计算未归属期权对波动率的敏感性;
+@@BEGIN VARIABLE: Runvest@@
+Runvest = opts_unvested_num * sigma * sqrt(maturity_yearend);
+@@END VARIABLE: Runvest@@
+
+* 计算期权奖励对波动率的敏感性（财年末）;
+@@BEGIN VARIABLE: Ropts_grants_yearend@@
+Ropts_grants_yearend = option_awards_num * sigma * sqrt(maturity_yearend);
+@@END VARIABLE: Ropts_grants_yearend@@
+
+* 计算总波动率敏感性;
+@@BEGIN VARIABLE: Ropt@@
+Ropt = sum(Rvest, Runvest, Ropts_grants_yearend);
+@@END VARIABLE: Ropt@@
+
+* 计算总财富;
+@@BEGIN VARIABLE: Vportfolio_yearend@@
+Vportfolio_yearend = sum(Vvest, Vunvest, Vopts_yearend, Vshr);
+@@END VARIABLE: Vportfolio_yearend@@
+
+* 如果 old_datafmt_flag 为 0，则将相关变量设为缺失值;
+if old_datafmt_flag=0 then do;
+  Svest=.; Sunvest=.; Sopts_grants_yearend=.; Sshr=.;
+  Ropt=.; Rvest=.;  Runvest=.; Ropts_grants_yearend=.;
+  Vportfolio_yearend=.; Vvest=.;  Vunvest=.; Vopts_yearend=.; Vshr=.;
+  delta=.; 	 
+end;
+run;
+
+* 对 excomp14 数据集进行处理，生成 excomp15 数据集;
+data excomp15;
+  set excomp14;
+  * 保留需要的变量;
+  keep coperol year delta optiondelta sharedelta ropt Vportfolio_yearend exec_fullname;
+run;
+
+* 将 excomp15 数据集与 anncomp 数据集连接，生成 excomp16 数据集;
+proc sql;
+  create table excomp16 as 
+  select * from excomp15 x left join anncomp y 
+  on x.coperol=y.coperol and x.year=y.year;  * 通过 coperol 和 year 连接两个数据集;
+quit;
+
+* 对 excomp16 数据集进行处理，生成 excomp17 数据集;
+data excomp17;
+  set excomp16;
+  * 如果 old_datafmt_flag 为 0，则使用新的 delta 和 vega 值;
+  if old_datafmt_flag=0 then do;
+    delta=newdelta;
+    optiondelta=newoptiondelta;
+    sharedelta=newsharedelta;
+    Ropt = newRopt;
+    Vportfolio_yearend = newVportfolio_yearend;
+  end;
+  firm_related_wealth=Vportfolio_yearend;  * 计算公司相关财富;
+  vega=ropt;  * 计算 vega;
+  keep coperol year delta vega firm_related_wealth old_datafmt_flag tdc1 gvkey exec_fullname sharedelta optiondelta;  * 保留需要的变量;
+  proc sort nodupkey;  * 去重;
+  by coperol year;  * 按 coperol 和 year 排序;
+run;
+
+* 对 excomp17 数据集进行处理，生成 deltavega 数据集;
+data deltavega;
+  set excomp17;
+  keep gvkey coperol year delta vega firm_related_wealth sharedelta optiondelta;  * 保留需要的变量;
+run;

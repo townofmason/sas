@@ -1,0 +1,176 @@
+/*这段代码从多个数据集中提取、处理和合并财务与市场数据，生成一个包含公司标识、财务指标、市场表现和投资者信息等变量的季度数据集 qtrvar，并将其保存到指定库中，用于后续分析。 */
+
+
+
+
+libname dh "G:\0_facial recognition\Version B 20210619\03_wrds studio vars_control variables";
+libname srca "G:\00_wrds studio variables\0000_wrds variables";
+
+/* 用到的变量及其数据库来源 */
+/* | 变量名            | 解释                                      | 数据库来源          | */
+/* |-------------------|-------------------------------------------|---------------------| */
+/* | @@VARIABLE: gvkey@@gvkey             | 公司标识符                                | srca.comp_crsp      | */
+/* | @@VARIABLE: fyearq@@fyearq            | 财务年度季度                              | srca.comp_crsp      | */
+/* | @@VARIABLE: datadate@@datadate          | 数据日期                                  | srca.comp_crsp      | */
+/* | @@VARIABLE: permno@@permno            | CRSP 证券标识符                           | srca.eptret         | */
+/* | @@VARIABLE: qcnt_8k@@qcnt_8k           | 8K 文件数量                               | srca.qcnt_8k        | */
+/* | @@VARIABLE: qcnt_press@@qcnt_press        | 新闻发布数量                              | srca.qcnt_press     | */
+/* | @@VARIABLE: lgseg_1@@lgseg_1           | 第一大业务部门收入占比                    | srca.lgseg          | */
+/* | @@VARIABLE: lgseg_2@@lgseg_2           | 第二大业务部门收入占比                    | srca.lgseg          | */
+/* | @@VARIABLE: lgseg_3@@lgseg_3           | 第三大业务部门收入占比                    | srca.lgseg          | */
+/* | @@VARIABLE: investor_beg@@investor_beg      | 期初投资者数量                            | srca.investor       | */
+/* | @@VARIABLE: investor_avg@@investor_avg      | 平均投资者数量                            | srca.investor       | */
+/* | @@VARIABLE: investor_end@@investor_end      | 期末投资者数量                            | srca.investor       | */
+
+/* 计算出的变量及其含义 */
+/* | 变量名           | 变量解释                                      | 变量计算公式                          | */
+/* |------------------|-----------------------------------------------|---------------------------------------| */
+/* | @@VARIABLE: gvkey_id@@gvkey_id         | 公司标识符的数值形式                          | gvkey_id = gvkey * 1                  | */
+/* | @@VARIABLE: yr@@yr               | 日期的年份部分                                | yr = floor(datadate / 10000)          | */
+/* | @@VARIABLE: mth@@mth              | 日期的月份部分                                | mth = floor(datadate / 100 - yr * 100)| */
+/* | @@VARIABLE: dr@@dr               | 日期的日部分                                  | dr = datadate - yr * 10000 - mth * 100| */
+/* | @@VARIABLE: datadate@@datadate         | 转换后的日期格式                              | datadate = mdy(mth, dr, yr)           | */
+/* | @@VARIABLE: qcnt_8k@@qcnt_8k          | 8K 文件数量（缺失值替换为 0）                 | if qcnt_8k = . then qcnt_8k = 0       | */
+/* | @@VARIABLE: qcnt_press@@qcnt_press       | 新闻发布数量（缺失值替换为 0）                | if qcnt_press = . then qcnt_press = 0 | */
+/* | @@VARIABLE: lgseg_1@@lgseg_1          | 第一大业务部门收入占比（缺失值替换为 0）      | if dum_seg = 1 and lgseg_1 = . then lgseg_1 = 0 | */
+/* | @@VARIABLE: lgseg_2@@lgseg_2          | 第二大业务部门收入占比（缺失值替换为 0）      | if dum_seg = 1 and lgseg_2 = . then lgseg_2 = 0 | */
+/* | @@VARIABLE: lgseg_3@@lgseg_3          | 第三大业务部门收入占比（缺失值替换为 0）      | if dum_seg = 1 and lgseg_3 = . then lgseg_3 = 0 | */
+
+/* 时间的设置 */
+/* | 时间变量         | 解释                                      | 时间范围            | */
+/* |------------------|-------------------------------------------|---------------------| */
+/* | @@VARIABLE: fyearq@@fyearq           | 财务年度季度                              | 2014 到 2020        | */
+/* | @@VARIABLE: datadate@@datadate         | 数据日期                                  | 2014 到 2020        | */
+/* | @@VARIABLE: dt_13f@@dt_13f           | 13F 文件日期                              | datadate 前三个月内 | */
+
+@@BEGIN VARIABLE: gvkey@@
+@@BEGIN VARIABLE: fyearq@@
+@@BEGIN VARIABLE: datadate@@
+
+/* 从 srca.afevar 中提取数据，筛选 fyearq 在 2014 到 2020 之间的记录，并删除 fqtr 变量 */
+data afevar;
+    set srca.afevar;
+    where fyearq>=2014 and fyearq<=2020;
+    drop fqtr;
+run;
+
+/* 对 afevar 数据集按 gvkey、fyearq 和 datadate 排序，并去除重复记录 */
+proc sort data=afevar nodupkey;
+    by gvkey fyearq datadate;
+run;
+
+@@END VARIABLE: gvkey@@
+@@END VARIABLE: fyearq@@
+@@END VARIABLE: datadate@@
+
+@@BEGIN VARIABLE: permno@@
+/* 从 srca.eptret 中提取数据，筛选 fyearq 在 2014 到 2020 之间的记录 */
+data eptret;
+    set srca.eptret;
+    where fyearq>=2014 and fyearq<=2020;
+run;
+
+@@END VARIABLE: permno@@
+
+
+/* 从 srca.inst_vars 中提取数据，筛选 fyearq 在 2014 到 2020 之间的记录 */
+data inst_vars;
+    set srca.inst_vars;
+    where fyearq>=2014 and fyearq<=2020;
+run;
+
+
+@@BEGIN VARIABLE: qcnt_8k@@
+/* 从 srca.qcnt_8k 中提取数据，删除缺失 gvkey 或 datadate 的记录 */
+data qcnt_8k;
+    set srca.qcnt_8k;
+    if missing(gvkey) then delete;
+    if missing(datadate) then delete;
+run;
+
+/* 将 qcnt_8k 和 srca.comp_crsp 按 gvkey 和 datadate 进行左连接，并筛选唯一记录 */
+proc sql;
+    create table qcnt_8k as
+    select unique a.*, b.fyearq
+    from qcnt_8k as a
+    left join srca.comp_crsp as b
+    on a.gvkey = b.gvkey and a.datadate = b.datadate;
+quit;
+
+/* 筛选 fyearq 在 2014 到 2020 之间的记录 */
+data qcnt_8k;
+    set qcnt_8k;
+    where fyearq>=2014 and fyearq<=2020;
+run;
+
+/* 对 qcnt_8k 数据集按 gvkey、fyearq 和 datadate 排序，并去除重复记录 */
+proc sort data=qcnt_8k nodupkey;
+    by gvkey fyearq datadate;
+run;
+@@END VARIABLE: qcnt_8k@@
+
+@@BEGIN VARIABLE: qcnt_press@@
+/* 将 srca.qcnt_pressfrom2010to2020 和 srca.comp_crsp 按 gvkey 和 datadate 进行左连接，并筛选唯一记录 */
+proc sql;
+    create table qcnt_press as
+    select unique a.*, b.fyearq
+    from srca.qcnt_pressfrom2010to2020 as a
+    left join srca.comp_crsp as b
+    on a.gvkey = b.gvkey and a.datadate = b.datadate;
+quit;
+
+/* 筛选 fyearq 在 2014 到 2020 之间的记录 */
+data qcnt_press;
+    set qcnt_press;
+    where fyearq>=2014 and fyearq<=2020;
+run;
+
+/* 对 qcnt_press 数据集按 gvkey、fyearq 和 datadate 排序，并去除重复记录 */
+proc sort data=qcnt_press nodupkey;
+    by gvkey fyearq datadate;
+run;
+@@END VARIABLE: qcnt_press@@
+
+@@BEGIN VARIABLE: lgseg_1@@
+@@BEGIN VARIABLE: lgseg_2@@
+@@BEGIN VARIABLE: lgseg_3@@
+/* 从 srca.lgseg 中提取数据，并创建 dum_seg 变量 */
+data lgseg;
+    set srca.lgseg;
+    dum_seg = 1;
+run;
+
+/* 将 lgseg 和 comp_crsp 按 gvkey 和 datadate 进行左连接，并筛选唯一记录 */
+proc sql;
+    create table lgseg as
+    select a.*, b.fyearq
+    from lgseg as a
+    left join comp_crsp as b
+    on a.gvkey = b.gvkey and a.srcdate = b.datadate;
+quit;
+
+/* 将 lgseg_1、lgseg_2 和 lgseg_3 中的缺失值替换为 0 */
+data lgseg;
+    set lgseg;
+    if dum_seg = 1 and lgseg_1 = . then lgseg_1 = 0;
+    if dum_seg = 1 and lgseg_2 = . then lgseg_2 = 0;
+    if dum_seg = 1 and lgseg_3 = . then lgseg_3 = 0;
+    where fyearq>=2014 and fyearq<=2020;
+    keep gvkey fyearq lgseg_1 lgseg_2 lgseg_3 dum_seg;
+run;
+@@END VARIABLE: lgseg_1@@
+@@END VARIABLE: lgseg_2@@
+@@END VARIABLE: lgseg_3@@
+
+@@BEGIN VARIABLE: investor_beg@@
+@@BEGIN VARIABLE: investor_avg@@
+@@BEGIN VARIABLE: investor_end@@
+/* 从 srca.investor 中提取数据，筛选 fyear 在 2014 到 2020 之间的记录，并保留特定变量 */
+data investor;
+    set srca.investor;
+    where fyear>=2014 and fyear<=2020;
+    keep gvkey fyear investor_end investor_avg investor_beg;
+run;
+@@END VARIABLE: investor_beg@@
+@@END VARIABLE: investor_avg@@
+@@END VARIABLE: investor_end@@

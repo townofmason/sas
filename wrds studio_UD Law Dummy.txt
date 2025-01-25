@@ -1,0 +1,50 @@
+/*
+这段代码的主要功能是创建一个虚拟变量（dummy variable），用于标识公司是否位于美国实施一致董事法（Universal Demand Law）的州。它从 Compustat 数据库中提取公司所在州的信息，并基于一组特定的州代码，创建一个新的变量 `d_udl`，如果公司位于这些州中，则 `d_udl` 为 1，否则为 0。最后，将包含公司标识符（`gvkey`）和 `d_udl` 变量的数据集保存到指定的库中。
+*/
+
+/*
+表格一：已知变量（直接引自数据库）
+| 名字      | 含义       | 数据库       |
+|-----------|------------|------------|
+| @@VARIABLE: gvkey@@gvkey   | 公司标识符   | comp.company |
+| @@VARIABLE: state@@state    | 公司所在州   | comp.company |
+*/
+
+/*
+表格二：计算得到的变量（由已知变量计算得来）
+| 名字      | 含义       | 公式       |
+|-----------|------------|------------|
+| @@VARIABLE: d_udl@@d_udl   | 一致董事法虚拟变量 | 如果 state 在特定列表中，则 d_udl = 1，否则 d_udl = 0 |
+*/
+
+/*
+时间限制变量时间范围表
+| 变量名     | 时间范围       |
+|----------|----------------|
+| 无       | 无               |
+*/
+libname vars '/home/manchester/jesscarroll/vars/';
+
+data s1;
+	@@BEGIN VARIABLE: state@@
+	@@BEGIN VARIABLE: gvkey@@
+set comp.company;
+if missing(state) then delete;
+if missing(gvkey) then delete;
+keep gvkey state;
+run;
+    @@END VARIABLE: state@@
+    @@END VARIABLE: gvkey@@
+data d_udl;
+set s1;
+	@@BEGIN VARIABLE: d_udl@@
+if state in ('GA','MI','FL','WI','MT','VA','UT','NH'
+,'MS','NC','AZ','NE','CT','ME','PA','TX','WY','ID'
+,'HI','IA','MA','RI','SC') then d_udl=1;
+if missing(d_udl) then d_udl=0;
+keep gvkey d_udl;
+run;
+   @@END VARIABLE: d_udl@@
+data vars.d_udl;
+set d_udl;
+run;

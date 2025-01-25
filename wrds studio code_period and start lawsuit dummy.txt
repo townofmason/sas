@@ -1,0 +1,400 @@
+** 代码目的：
+** 该代码从Compustat和Audit Analytics数据库中提取公司财务数据和法律诉讼数据，
+** 构建一个数据集，用于标识在指定时间范围内（1999年1月1日至2020年12月31日）
+** 涉及法律诉讼的公司。代码通过整合财务年度和法律案件的时间范围，生成一系列
+** 与诉讼相关的变量。
+**
+** 已知变量表格：
+** | 变量名           | 含义                                      | 数据库来源           |
+** |------------------|-------------------------------------------|----------------------|
+** | @@VARIABLE: GVKEY@@GVKEY            | 公司唯一标识符（Compustat中的公司ID）      | Compustat (comp.funda)|
+** | @@VARIABLE: conm@@conm             | 公司名称                                  | Compustat (comp.funda)|
+** | @@VARIABLE: datadate@@datadate         | 财务年度结束日期                          | Compustat (comp.funda)|
+** | @@VARIABLE: fyear@@fyear            | 财务年度                                  | Compustat (comp.funda)|
+** | @@VARIABLE: fyr@@fyr              | 财务年度结束月份                          | Compustat (comp.funda)|
+** | @@VARIABLE: CIK@@CIK              | 公司中央索引键（SEC中的公司ID）            | Compustat (comp.funda)|
+** | @@VARIABLE: exchg@@exchg            | 交易所代码                                | Compustat (comp.funda)|
+** | @@VARIABLE: sich@@sich             | 标准行业分类代码（SIC Code）               | Compustat (comp.funda)|
+** | @@VARIABLE: shrcd@@shrcd            | 股票代码（CRSP中的股票分类代码）           | CRSP (crsp.dsenames)  |
+** | @@VARIABLE: exchcd@@exchcd           | 交易所代码（CRSP中的交易所代码）           | CRSP (crsp.dsenames)  |
+** | @@VARIABLE: siccd@@siccd            | 标准行业分类代码（SIC Code，来自CRSP）     | CRSP (crsp.dsenames)  |
+** | @@VARIABLE: legal_case_key@@legal_case_key   | 法律案件唯一标识符                        | Audit Analytics (audit.auditlegal)|
+** | @@VARIABLE: CASE_START_DATE_S@@CASE_START_DATE_S| 案件开始日期                              | Audit Analytics (audit.auditlegal)|
+** | @@VARIABLE: CASE_END_DATE_S@@CASE_END_DATE_S  | 案件结束日期                              | Audit Analytics (audit.auditlegal)|
+** | @@VARIABLE: PLAINTIFF@@PLAINTIFF        | 原告标识（1表示原告）                     | Audit Analytics (audit.auditlegal)|
+** | @@VARIABLE: DEFENDANT@@DEFENDANT        | 被告标识（1表示被告）                     | Audit Analytics (audit.auditlegal)|
+** | @@VARIABLE: SETTLEMENT_AMT@@SETTLEMENT_AMT   | 和解金额                                  | Audit Analytics (audit.auditlegal)|
+** | @@VARIABLE: is_category_type_X@@is_category_type_X | 案件类型标识（X为具体类型代码）           | Audit Analytics (audit.auditlegal)|
+**
+** 计算得出的变量表格：
+** | 变量名               | 含义                                      | 公式/计算逻辑         |
+** |----------------------|-------------------------------------------|----------------------|
+** | @@VARIABLE: lawsuit@@lawsuit              | 是否涉及诉讼（1表示涉及，0表示不涉及）     | lawsuit = 1（如果案件类型满足条件）|
+** | @@VARIABLE: security@@security             | 是否涉及证券诉讼                          | security = is_category_type_41 * 1|
+** | @@VARIABLE: class@@class                | 是否涉及集体诉讼                          | class = is_category_type_1 * 1|
+** | @@VARIABLE: collective@@collective           | 是否涉及集体行动诉讼                      | collective = is_category_type_51 * 1|
+** | @@VARIABLE: derivative@@derivative           | 是否涉及衍生诉讼                          | derivative = is_category_type_97 * 1|
+** | @@VARIABLE: product@@product              | 是否涉及产品责任诉讼                      | product = (product_lia + product_con + product_motor + product_marine + product_air) >= 1|
+** | @@VARIABLE: copy_patent@@copy_patent          | 是否涉及版权或专利诉讼                    | copy_patent = (copyright + patent) >= 1|
+** | @@VARIABLE: antitrust@@antitrust            | 是否涉及反垄断诉讼                        | antitrust = is_category_type_6 * 1|
+** | @@VARIABLE: fin_rep@@fin_rep              | 是否涉及财务报告诉讼                      | fin_rep = is_category_type_48 * 1|
+** | @@VARIABLE: merger@@merger               | 是否涉及并购诉讼                          | merger = is_category_type_33 * 1|
+** | @@VARIABLE: pdsue_lawsuit@@pdsue_lawsuit        | 是否在财务年度内涉及诉讼                  | pdsue_lawsuit = 1（如果 lawsuit_sum >= 1）|
+** | @@VARIABLE: pdsue_security@@pdsue_security       | 是否在财务年度内涉及证券诉讼              | pdsue_security = 1（如果 security_sum >= 1）|
+** | @@VARIABLE: pdsue_class@@pdsue_class          | 是否在财务年度内涉及集体诉讼              | pdsue_class = 1（如果 class_sum >= 1）|
+** | @@VARIABLE: pdsue_collective@@pdsue_collective     | 是否在财务年度内涉及集体行动诉讼          | pdsue_collective = 1（如果 collective_sum >= 1）|
+** | @@VARIABLE: pdsue_derivative@@pdsue_derivative     | 是否在财务年度内涉及衍生诉讼              | pdsue_derivative = 1（如果 derivative_sum >= 1）|
+** | @@VARIABLE: pdsue_product@@pdsue_product        | 是否在财务年度内涉及产品责任诉讼          | pdsue_product = 1（如果 product_sum >= 1）|
+** | @@VARIABLE: pdsue_copy_patent@@pdsue_copy_patent    | 是否在财务年度内涉及版权或专利诉讼        | pdsue_copy_patent = 1（如果 copy_patent_sum >= 1）|
+** | @@VARIABLE: pdsue_antitrust@@pdsue_antitrust      | 是否在财务年度内涉及反垄断诉讼            | pdsue_antitrust = 1（如果 antitrust_sum >= 1）|
+** | @@VARIABLE: pdsue_fin_rep@@pdsue_fin_rep        | 是否在财务年度内涉及财务报告诉讼          | pdsue_fin_rep = 1（如果 fin_rep_sum >= 1）|
+** | @@VARIABLE: pdsue_merger@@pdsue_merger         | 是否在财务年度内涉及并购诉讼              | pdsue_merger = 1（如果 merger_sum >= 1）|
+** | @@VARIABLE: stsue_lawsuit@@stsue_lawsuit        | 是否在案件开始年份涉及诉讼                | stsue_lawsuit = 1（如果 lawsuit_sum >= 1）|
+** | @@VARIABLE: stsue_security@@stsue_security       | 是否在案件开始年份涉及证券诉讼            | stsue_security = 1（如果 security_sum >= 1）|
+** | @@VARIABLE: stsue_class@@stsue_class          | 是否在案件开始年份涉及集体诉讼            | stsue_class = 1（如果 class_sum >= 1）|
+** | @@VARIABLE: stsue_collective@@stsue_collective     | 是否在案件开始年份涉及集体行动诉讼        | stsue_collective = 1（如果 collective_sum >= 1）|
+** | @@VARIABLE: stsue_derivative@@stsue_derivative     | 是否在案件开始年份涉及衍生诉讼            | stsue_derivative = 1（如果 derivative_sum >= 1）|
+** | @@VARIABLE: stsue_product@@stsue_product        | 是否在案件开始年份涉及产品责任诉讼        | stsue_product = 1（如果 product_sum >= 1）|
+** | @@VARIABLE: stsue_copy_patent@@stsue_copy_patent    | 是否在案件开始年份涉及版权或专利诉讼      | stsue_copy_patent = 1（如果 copy_patent_sum >= 1）|
+** | @@VARIABLE: stsue_antitrust@@stsue_antitrust      | 是否在案件开始年份涉及反垄断诉讼          | stsue_antitrust = 1（如果 antitrust_sum >= 1）|
+** | @@VARIABLE: stsue_fin_rep@@stsue_fin_rep        | 是否在案件开始年份涉及财务报告诉讼        | stsue_fin_rep = 1（如果 fin_rep_sum >= 1）|
+** | @@VARIABLE: stsue_merger@@stsue_merger         | 是否在案件开始年份涉及并购诉讼            | stsue_merger = 1（如果 merger_sum >= 1）|
+** | @@VARIABLE: stsettleamt@@stsettleamt          | 案件开始年份的和解金额总和                | stsettleamt = sum(SETTLEMENT_AMT)|
+**
+** 时间范围：
+** - 财务数据时间范围：1999年1月1日至2020年12月31日
+** - 法律案件时间范围：2000年至2020年
+*******************************************************************************;
+
+libname vars '/home/manchester/jesscarroll/vars/';  /* 定义库路径 */
+
+/* 设置日期范围 */
+%let BEGDATE=01JAN1999;
+%let ENDDATE=31DEC2020;
+
+/* Step1. 提取Compustat样本 */
+data comp1;
+    set comp.funda;
+    where datadate between "&BEGDATE"d and "&ENDDATE"d
+        and DATAFMT='STD' and INDFMT='INDL' and CONSOL='C' and POPSRC='D';
+    if SEQ>0;  /* 保留有股东权益的公司 */
+    if missing(gvkey) then delete;  /* 删除缺失GVKEY的记录 */
+    if missing(datadate) then delete;  /* 删除缺失datadate的记录 */
+    label datadate = "Fiscal Year End Date";  /* 添加标签 */
+    keep @@BEGIN VARIABLE: GVKEY@@GVKEY@@END VARIABLE: GVKEY@@ 
+         @@BEGIN VARIABLE: conm@@conm@@END VARIABLE: conm@@ 
+         @@BEGIN VARIABLE: datadate@@datadate@@END VARIABLE: datadate@@ 
+         @@BEGIN VARIABLE: fyear@@fyear@@END VARIABLE: fyear@@ 
+         @@BEGIN VARIABLE: fyr@@fyr@@END VARIABLE: fyr@@ 
+         @@BEGIN VARIABLE: CIK@@CIK@@END VARIABLE: CIK@@ 
+         @@BEGIN VARIABLE: exchg@@exchg@@END VARIABLE: exchg@@;  /* 保留所需变量 */
+run;
+
+/* 去重处理 */
+proc sort data=comp1 nodupkey;
+    by GVKEY fyear;
+run;
+proc sort data=comp1 nodupkey;
+    by GVKEY datadate;
+run;
+
+/* 添加行业代码 */
+proc sql;
+    create table comp1 as 
+    select a.*, b.sich
+    from comp1 as a 
+    left join COMP.CO_INDUSTRY as b
+    on a.gvkey=b.gvkey and a.datadate=b.datadate;
+quit;
+
+/* 添加上一年的财务年度结束日期 */
+proc sql;
+    create table comp1
+    as select unique a.*, b.datadate as datadate_l1
+    from comp1 as a 
+    left join comp1 as b
+    on a.GVKEY=b.GVKEY and a.fyear=b.fyear+1;
+quit;
+
+/* 删除缺失上一财务年度日期的记录 */
+data comp1;
+    set comp1;
+    if missing(datadate_l1) then delete;
+run;
+
+/* Step2. 添加历史CRSP PERMNO标识符 */
+proc sql;
+    create table comp2 (drop=LinkScore)
+    as select distinct a.*, b.lpermno as permno,
+        case
+            when b.linkprim='P' then 2 
+            when b.linkprim='C' then 1 
+            else 0
+        end as LinkScore
+    from comp1 as a, crsp.ccmxpf_linktable as b
+    where a.gvkey = b.gvkey and
+        b.LINKTYPE in ("LU","LC") and
+        (b.LINKDT <= a.datadate) and (a.datadate <= b.LINKENDDT or missing(b.LINKENDDT))
+    group by a.gvkey, a.datadate
+    having LinkScore=max(LinkScore);
+quit;
+
+/* 删除缺失permno的记录 */
+data comp2; 
+    set comp2;
+    if missing(permno) then delete;
+run;
+
+/* 去重处理 */
+proc sort data=comp2 nodupkey; 
+    by permno datadate; 
+run;
+
+/* 添加CRSP股票信息 */
+proc sql;
+    create table comp2
+    as select a.*, b.shrcd, b.exchcd, b.siccd
+    from comp2 as a 
+    left join crsp.dsenames as b
+    on a.permno=b.permno;
+quit;
+
+/* 去重处理 */
+proc sort data=comp2 nodupkey;
+    by permno datadate;
+run;
+
+/* Step3. 清理Audit Analytics法律诉讼数据库 */
+data auditlegal;
+    set audit.auditlegal;
+    if missing(legal_case_key) then delete;  /* 删除缺失案件标识的记录 */
+    if missing(CASE_START_DATE_S) then delete;  /* 删除缺失案件开始日期的记录 */
+    if DEFENDANT=1;  /* 仅保留被告公司 */
+    if 2000<=year(CASE_START_DATE_S)<=2020;  /* 保留2000年至2020年的案件 */
+    if company_fkey^=.;  /* 删除缺失公司标识的记录 */
+    keep @@BEGIN VARIABLE: legal_case_key@@legal_case_key company_fkey @@BEGIN VARIABLE: CASE_START_DATE_S@@CASE_START_DATE_S @@BEGIN VARIABLE: CASE_END_DATE_S@@CASE_END_DATE_S @@BEGIN VARIABLE: PLAINTIFF@@PLAINTIFF @@BEGIN VARIABLE: DEFENDANT@@DEFENDANT REL_NON_PARTY @@BEGIN VARIABLE: SETTLEMENT_AMT@@SETTLEMENT_AMT 
+        is_category_type_1 is_category_type_51 is_category_type_97 is_category_type_36 is_category_type_41
+        is_category_type_76 is_category_type_102 is_category_type_68 is_category_type_77 
+        is_category_type_12 is_category_type_35 is_category_type_6 is_category_type_48 is_category_type_33;
+run;
+
+/* 测试：查看有和解金额的记录 */
+data test;
+    set auditlegal;
+    if SETTLEMENT_AMT>0;
+run;
+/*Step4. 生成法律案件类型变量*/
+data legal;
+    set auditlegal; 
+    @@BEGIN VARIABLE: security@@security = is_category_type_41 * 1;  /* 证券诉讼 */@@END VARIABLE: security@@
+    @@BEGIN VARIABLE: class@@class = is_category_type_1 * 1;  /* 集体诉讼 */@@END VARIABLE: class@@
+    @@BEGIN VARIABLE: collective@@collective = is_category_type_51 * 1;  /* 集体行动诉讼 */@@END VARIABLE: collective@@
+    @@BEGIN VARIABLE: derivative@@derivative = is_category_type_97 * 1;  /* 衍生诉讼 */@@END VARIABLE: derivative@@
+    @@BEGIN VARIABLE: product_lia@@product_lia = is_category_type_36 * 1;  /* 产品责任诉讼 */@@END VARIABLE: product_lia@@
+    @@BEGIN VARIABLE: product_air@@product_air = is_category_type_76 * 1;  /* 航空产品诉讼 */@@END VARIABLE: product_air@@
+    @@BEGIN VARIABLE: product_marine@@product_marine = is_category_type_102 * 1;  /* 船舶产品诉讼 */@@END VARIABLE: product_marine@@
+    @@BEGIN VARIABLE: product_motor@@product_motor = is_category_type_68 * 1;  /* 机动车产品诉讼 */@@END VARIABLE: product_motor@@
+    @@BEGIN VARIABLE: product_con@@product_con = is_category_type_77 * 1;  /* 建筑产品诉讼 */@@END VARIABLE: product_con@@
+    @@BEGIN VARIABLE: copyright@@copyright = is_category_type_12 * 1;  /* 版权诉讼 */@@END VARIABLE: copyright@@
+    @@BEGIN VARIABLE: patent@@patent = is_category_type_35 * 1;  /* 专利诉讼 */@@END VARIABLE: patent@@
+    @@BEGIN VARIABLE: antitrust@@antitrust = is_category_type_6 * 1;  /* 反垄断诉讼 */@@END VARIABLE: antitrust@@
+    @@BEGIN VARIABLE: fin_rep@@fin_rep = is_category_type_48 * 1;  /* 财务报告诉讼 */@@END VARIABLE: fin_rep@@
+    @@BEGIN VARIABLE: merger@@merger = is_category_type_33 * 1;  /* 并购诉讼 */@@END VARIABLE: merger@@
+    drop is_category_type_1 is_category_type_51 is_category_type_97 is_category_type_36 is_category_type_41
+        is_category_type_76 is_category_type_102 is_category_type_68 is_category_type_77 
+        is_category_type_12 is_category_type_35 is_category_type_6 is_category_type_48 is_category_type_33;
+run;
+
+/* Step5. 将法律案件与Compustat公司匹配 */
+proc sql;
+    create table legal_gvkey
+    as select a.*, b.gvkey
+    from legal as a 
+    left join comp.company as b
+    on not missing(a.company_fkey) and a.company_fkey=b.cik;
+quit;
+
+/* 删除缺失gvkey的记录 */
+data legal_gvkey; 
+    set legal_gvkey; 
+    if missing(gvkey) then delete;  
+run;
+
+/* Step6. 添加案件开始和结束年份 */
+proc sql;
+    create table legal_gvkey
+    as select a.*, b.fyear as suefyst, c.fyear as suefyend
+    from legal_gvkey as a 
+    left join comp1 as b
+    on a.gvkey = b.gvkey
+    and (b.datadate_l1 < a.CASE_START_DATE_S and not missing(b.datadate_l1))
+    and (a.CASE_START_DATE_S <= b.datadate and not missing(b.datadate))
+    left join comp1 as c
+    on a.gvkey = c.gvkey
+    and (c.datadate_l1 < a.CASE_END_DATE_S and not missing(c.datadate_l1))
+    and (a.CASE_END_DATE_S <= c.datadate and not missing(c.datadate))
+    order by gvkey, CASE_START_DATE_S;
+quit;
+
+data legal_gvkey;
+    set legal_gvkey;
+    if not missing(suefyst);
+    @@BEGIN VARIABLE: lawsuit@@lawsuit = 1;  /* 涉及诉讼 */@@END VARIABLE: lawsuit@@
+    if product_lia + product_con + product_motor + product_marine + product_air >= 1 then @@BEGIN VARIABLE: product@@product = 1;  /* 产品责任诉讼 */@@END VARIABLE: product@@
+    if missing(product) then product = 0;
+    if copyright + patent >= 1 then @@BEGIN VARIABLE: copy_patent@@copy_patent = 1;  /* 版权或专利诉讼 */@@END VARIABLE: copy_patent@@
+    if missing(copy_patent) then copy_patent = 0;
+run;
+
+/* Step8. 按财务年度汇总法律案件 */
+proc sql;
+    create table legal_gvkey_period as 
+    select unique a.*, b.lawsuit, b.security, b.class, b.collective, b.derivative, b.product_lia, b.product_air, b.product_marine, b.product_motor, b.product_con,
+                  b.copyright, b.patent, b.antitrust, b.fin_rep, b.merger, b.product, b.copy_patent, b.settlement_amt, b.suefyst, b.suefyend
+    from comp2 as a 
+    left join legal_gvkey as b
+    on a.gvkey = b.gvkey and (b.suefyst <= a.fyear <= b.suefyend and not missing(suefyst) and not missing(suefyend));
+quit;
+
+/* Step9. 按财务年度汇总法律案件数量 */
+proc sql;
+    create table legal_gvkey_pdsum as 
+    select unique permno, gvkey, CIK, datadate, datadate_l1, fyear, exchg, sich, shrcd, exchcd, siccd,
+        sum(lawsuit) as lawsuit_sum, 
+        sum(security) as security_sum, 
+        sum(class) as class_sum, 
+        sum(collective) as collective_sum, 
+        sum(derivative) as derivative_sum,
+        sum(product) as product_sum, 
+        sum(copyright) as copyright_sum, 
+        sum(patent) as patent_sum, 
+        sum(antitrust) as antitrust_sum, 
+        sum(fin_rep) as fin_rep_sum, 
+        sum(merger) as merger_sum,
+        sum(copy_patent) as copy_patent_sum,
+        sum(product_lia) as product_lia_sum
+    from legal_gvkey_period
+    group by permno, fyear;
+quit;
+data legal_gvkey_pdsum;
+    set legal_gvkey_pdsum;
+    if lawsuit_sum >= 1 then @@BEGIN VARIABLE: pdsue_lawsuit@@pdsue_lawsuit = 1;@@END VARIABLE: pdsue_lawsuit@@
+    if security_sum >= 1 then @@BEGIN VARIABLE: pdsue_security@@pdsue_security = 1;@@END VARIABLE: pdsue_security@@
+    if class_sum >= 1 then @@BEGIN VARIABLE: pdsue_class@@pdsue_class = 1;@@END VARIABLE: pdsue_class@@
+    if collective_sum >= 1 then @@BEGIN VARIABLE: pdsue_collective@@pdsue_collective = 1;@@END VARIABLE: pdsue_collective@@
+    if derivative_sum >= 1 then @@BEGIN VARIABLE: pdsue_derivative@@pdsue_derivative = 1;@@END VARIABLE: pdsue_derivative@@
+    if product_sum >= 1 then @@BEGIN VARIABLE: pdsue_product@@pdsue_product = 1;@@END VARIABLE: pdsue_product@@
+    if copy_patent_sum >= 1 then @@BEGIN VARIABLE: pdsue_copy_patent@@pdsue_copy_patent = 1;@@END VARIABLE: pdsue_copy_patent@@
+    if patent_sum >= 1 then @@BEGIN VARIABLE: pdsue_patent@@pdsue_patent = 1;@@END VARIABLE: pdsue_patent@@
+    if antitrust_sum >= 1 then @@BEGIN VARIABLE: pdsue_antitrust@@pdsue_antitrust = 1;@@END VARIABLE: pdsue_antitrust@@
+    if fin_rep_sum >= 1 then @@BEGIN VARIABLE: pdsue_fin_rep@@pdsue_fin_rep = 1;@@END VARIABLE: pdsue_fin_rep@@
+    if merger_sum >= 1 then @@BEGIN VARIABLE: pdsue_merger@@pdsue_merger = 1;@@END VARIABLE: pdsue_merger@@
+    if copyright_sum >= 1 then @@BEGIN VARIABLE: pdsue_copy@@pdsue_copy = 1;@@END VARIABLE: pdsue_copy@@
+    if product_lia_sum >= 1 then @@BEGIN VARIABLE: pdsue_product_lia@@pdsue_product_lia = 1;@@END VARIABLE: pdsue_product_lia@@
+
+    if missing(pdsue_lawsuit) then pdsue_lawsuit = 0;
+    if missing(pdsue_security) then pdsue_security = 0;
+    if missing(pdsue_class) then pdsue_class = 0;
+    if missing(pdsue_collective) then pdsue_collective = 0;
+    if missing(pdsue_derivative) then pdsue_derivative = 0;
+    if missing(pdsue_product) then pdsue_product = 0;
+    if missing(pdsue_copy_patent) then pdsue_copy_patent = 0;
+    if missing(pdsue_patent) then pdsue_patent = 0;
+    if missing(pdsue_antitrust) then pdsue_antitrust = 0;
+    if missing(pdsue_fin_rep) then pdsue_fin_rep = 0;
+    if missing(pdsue_merger) then pdsue_merger = 0;
+    if missing(pdsue_copy) then pdsue_copy = 0;
+    if missing(pdsue_product_lia) then pdsue_product_lia = 0;
+run;
+
+/* Step11. 按案件开始年份汇总法律案件 */
+proc sql;
+    create table legal_gvkey_start as 
+    select unique a.*, b.lawsuit, b.security, b.class, b.collective, b.derivative, b.product_lia, b.product_air, b.product_marine, b.product_motor, b.product_con,
+                  b.copyright, b.patent, b.antitrust, b.fin_rep, b.merger, b.product, b.copy_patent, b.settlement_amt, b.suefyst
+    from comp2 as a 
+    left join legal_gvkey as b
+    on a.gvkey = b.gvkey and (a.fyear = b.suefyst and not missing(suefyst));
+quit;
+
+/* Step12. 按案件开始年份汇总法律案件数量 */
+proc sql;
+    create table legal_gvkey_stsum as 
+    select unique permno, gvkey, CIK, datadate, datadate_l1, fyear, exchg, sich, shrcd, exchcd, siccd,
+        sum(lawsuit) as lawsuit_sum, 
+        sum(security) as security_sum, 
+        sum(class) as class_sum, 
+        sum(collective) as collective_sum, 
+        sum(derivative) as derivative_sum,
+        sum(product) as product_sum, 
+        sum(copyright) as copyright_sum, 
+        sum(patent) as patent_sum, 
+        sum(antitrust) as antitrust_sum, 
+        sum(fin_rep) as fin_rep_sum, 
+        sum(merger) as merger_sum,
+        sum(copy_patent) as copy_patent_sum,
+        sum(settlement_amt) as stsettleamt, 
+        sum(product_lia) as product_lia_sum
+    from legal_gvkey_start
+    group by permno, fyear;
+quit;
+
+data legal_gvkey_stsum;
+    set legal_gvkey_stsum;
+    if lawsuit_sum >= 1 then @@BEGIN VARIABLE: stsue_lawsuit@@stsue_lawsuit = 1;@@END VARIABLE: stsue_lawsuit@@
+    if security_sum >= 1 then @@BEGIN VARIABLE: stsue_security@@stsue_security = 1;@@END VARIABLE: stsue_security@@
+    if class_sum >= 1 then @@BEGIN VARIABLE: stsue_class@@stsue_class = 1;@@END VARIABLE: stsue_class@@
+    if collective_sum >= 1 then @@BEGIN VARIABLE: stsue_collective@@stsue_collective = 1;@@END VARIABLE: stsue_collective@@
+    if derivative_sum >= 1 then @@BEGIN VARIABLE: stsue_derivative@@stsue_derivative = 1;@@END VARIABLE: stsue_derivative@@
+    if product_sum >= 1 then @@BEGIN VARIABLE: stsue_product@@stsue_product = 1;@@END VARIABLE: stsue_product@@
+    if copy_patent_sum >= 1 then @@BEGIN VARIABLE: stsue_copy_patent@@stsue_copy_patent = 1;@@END VARIABLE: stsue_copy_patent@@
+    if patent_sum >= 1 then @@BEGIN VARIABLE: stsue_patent@@stsue_patent = 1;@@END VARIABLE: stsue_patent@@
+    if antitrust_sum >= 1 then @@BEGIN VARIABLE: stsue_antitrust@@stsue_antitrust = 1;@@END VARIABLE: stsue_antitrust@@
+    if fin_rep_sum >= 1 then @@BEGIN VARIABLE: stsue_fin_rep@@stsue_fin_rep = 1;@@END VARIABLE: stsue_fin_rep@@
+    if merger_sum >= 1 then @@BEGIN VARIABLE: stsue_merger@@stsue_merger = 1;@@END VARIABLE: stsue_merger@@
+    if copyright_sum >= 1 then @@BEGIN VARIABLE: stsue_copy@@stsue_copy = 1;@@END VARIABLE: stsue_copy@@
+    if product_lia_sum >= 1 then @@BEGIN VARIABLE: stsue_product_lia@@stsue_product_lia = 1;@@END VARIABLE: stsue_product_lia@@
+
+    if missing(stsue_lawsuit) then stsue_lawsuit = 0;
+    if missing(stsue_security) then stsue_security = 0;
+    if missing(stsue_class) then stsue_class = 0;
+    if missing(stsue_collective) then stsue_collective = 0;
+    if missing(stsue_derivative) then stsue_derivative = 0;
+    if missing(stsue_product) then stsue_product = 0;
+    if missing(stsue_copy_patent) then stsue_copy_patent = 0;
+    if missing(stsue_patent) then stsue_patent = 0;
+    if missing(stsue_antitrust) then stsue_antitrust = 0;
+    if missing(stsue_fin_rep) then stsue_fin_rep = 0;
+    if missing(stsue_merger) then stsue_merger = 0;
+    if missing(stsue_copy) then stsue_copy = 0;
+    if missing(stsue_product_lia) then stsue_product_lia = 0;
+run;
+/* Step14. 合并财务年度和案件开始年份的诉讼数据 */
+proc sql;
+    create table comp_legal
+    as select unique a.*, b.*
+    from legal_gvkey_pdsum as a 
+    left join legal_gvkey_stsum as b
+    on a.permno = b.permno and a.datadate = b.datadate
+    order by permno, datadate;
+quit;
+
+/* Step15. 删除多余的汇总变量 */
+data comp_legal;
+    set comp_legal;
+    drop lawsuit_sum security_sum class_sum collective_sum derivative_sum product_sum copyright_sum patent_sum antitrust_sum fin_rep_sum merger_sum copy_patent_sum product_lia_sum;
+run;
+
+/* Step16. 去重处理 */
+proc sort data=comp_legal nodupkey;
+    by gvkey permno datadate;
+run;
+
+/* Step17. 保存最终数据集 */
+data vars.comp_legal;
+    set comp_legal;
+run;
+
+/* Step18. 描述性统计 */
+proc means data=vars.comp_legal;
+run;

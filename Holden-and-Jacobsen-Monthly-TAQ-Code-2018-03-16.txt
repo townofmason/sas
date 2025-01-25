@@ -1,0 +1,957 @@
+/*
+   该代码的主要功能是从 WRDS 数据库中提取月度交易和报价数据 (MTAQ)，
+   进行数据清洗和处理，计算国家最佳买卖报价 (NBBO)，计算标准流动性度量，
+   并将结果输出到 WRDS 云文件夹。
+
+   具体来说，代码执行以下操作：
+    1. 从 WRDS 数据库中提取月度报价和交易数据。
+    2. 清洗报价数据，处理异常模式、交叉报价、单边报价、异常大价差和撤回报价。
+    3. 清洗交易数据，保留有效的交易记录。
+    4.  创建插值时间变量，以便更精确地匹配交易和报价。
+    5. 计算国家最佳买卖报价 (NBBO)，包括最佳买价、最佳卖价以及相应的深度。
+    6. 将交易与相应的 NBBO 进行匹配。
+    7. 使用 Lee & Ready (1991), Ellis, Michaely & O'Hara (2000), 和 Chakrabarty, Li, Nguyen, & Van Ness (2006) 三种算法标记交易为买入或卖出。
+    8. 计算报价价差和深度。
+    9. 计算有效价差。
+    10. 计算已实现价差和价格冲击。
+    11. 将结果输出到 WRDS 云文件夹。
+*/
+
+/*
+表格一：已知变量（直接引自数据库）
+| 名字         | 含义                     | 数据库    |
+|--------------|--------------------------|-----------|
+| @@VARIABLE: symbol@@mtaq_symbol   | 股票代码                  |  taq      |
+| @@VARIABLE: date@@mtaq_date        | 交易日期                  | taq      |
+| @@VARIABLE: time@@mtaq_time       | 交易时间                  | taq     |
+| @@VARIABLE: mode@@mtaq_mode       | 报价模式                  |  taq      |
+| @@VARIABLE: BID@@mtaq_BID         | 买入价                   | taq     |
+| @@VARIABLE: OFR@@mtaq_OFR         | 卖出价                   |  taq    |
+| @@VARIABLE: OFRSIZ@@mtaq_OFRSIZ      | 卖出量                   |  taq     |
+| @@VARIABLE: BIDSIZ@@mtaq_BIDSIZ      | 买入量                   |  taq      |
+| @@VARIABLE: ex@@mtaq_ex        | 交易所代码                  |  taq     |
+| @@VARIABLE: mmid@@mtaq_mmid        | 做市商代码                 |  taq     |
+| @@VARIABLE: corr@@mtaq_corr       | 交易纠正代码                |  taq     |
+| @@VARIABLE: price@@mtaq_price        | 交易价格                 |  taq     |
+| @@VARIABLE: size@@mtaq_size        | 交易量                  |  taq      |
+*/
+
+/*
+表格二：计算得到的变量
+| 名字                   | 含义                                 | 公式                                                           |
+|------------------------|--------------------------------------|----------------------------------------------------------------|
+| @@VARIABLE: spr@@mtaq_spr                   | 买卖价差                             | OFR - BID                                                        |
+| @@VARIABLE: J@@mtaq_J                     | 秒内报价序号                               |                                                                |
+| @@VARIABLE: N@@mtaq_N                     | 秒内报价总数                             |                                                                |
+| @@VARIABLE: InterpolatedTime@@mtaq_InterpolatedTime            | 插值时间                                 | time + ((2*J-1)/(2*N))                                                |
+| @@VARIABLE: I@@mtaq_I                | 秒内交易序号                              |                                                                |
+| @@VARIABLE: BestBid@@mtaq_BestBid                   | 最佳买入价                               | max(of exbidR1-exbidR&i)                                         |
+| @@VARIABLE: BestOfr@@mtaq_BestOfr                   | 最佳卖出价                              | min(of exofrR1-exofrR&i)                                         |
+| @@VARIABLE: MaxBidDepth@@mtaq_MaxBidDepth               | 最大买入深度                               |                                                                |
+| @@VARIABLE: MaxOfrDepth@@mtaq_MaxOfrDepth                | 最大卖出深度                               |                                                                |
+| @@VARIABLE: TotalBidDepth@@mtaq_TotalBidDepth               | 总买入深度                                |                                                               |
+| @@VARIABLE: TotalOfrDepth@@mtaq_TotalOfrDepth              | 总卖出深度                                |                                                               |
+| @@VARIABLE: type@@mtaq_type                     | 数据类型（交易或报价）                               | 'T' for trade, 'Q' for quote                                      |
+| @@VARIABLE: quotetime@@mtaq_quotetime             |  最近一次报价时间                           |                                                               |
+| @@VARIABLE: BestOfr2@@mtaq_BestOfr2             | 最近一次最佳卖出价                           |                                                               |
+| @@VARIABLE: BestBid2@@mtaq_BestBid2             | 最近一次最佳买入价                            |                                                               |
+| @@VARIABLE: MaxOfrDepth2@@mtaq_MaxOfrDepth2           | 最近一次最大卖出深度                           |                                                               |
+| @@VARIABLE: MaxBidDepth2@@mtaq_MaxBidDepth2          | 最近一次最大买入深度                            |                                                               |
+| @@VARIABLE: TotalOfrDepth2@@mtaq_TotalOfrDepth2           | 最近一次总卖出深度                            |                                                               |
+| @@VARIABLE: TotalBidDepth2@@mtaq_TotalBidDepth2          | 最近一次总买入深度                            |                                                               |
+| @@VARIABLE: midpoint@@mtaq_midpoint                | 买卖价中点                              | (BestOfr2+BestBid2)/2                                            |
+| @@VARIABLE: lock@@mtaq_lock                     | 是否锁定市场（买卖价相同）                    | 1 if BestOfr2=BestBid2, else 0                                 |
+| @@VARIABLE: cross@@mtaq_cross                    | 是否交叉市场（买价高于卖价）                     | 1 if BestOfr2<BestBid2, else 0                              |
+| @@VARIABLE: direction@@mtaq_direction               | 交易价格方向                              | dif(price)                                                     |
+| @@VARIABLE: direction2@@mtaq_direction2               | 交易价格方向                              | if direction ne 0 then direction2=direction; else direction2=direction2 |
+| @@VARIABLE: BuySellLR@@mtaq_BuySellLR                  | Lee & Ready (1991) 交易方向指标                               |                                                               |
+| @@VARIABLE: BuySellEMO@@mtaq_BuySellEMO                 | Ellis, Michaely & O'Hara (2000) 交易方向指标                           |                                                               |
+| @@VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV                | Chakrabarty, Li, Nguyen, & Van Ness (2006) 交易方向指标                                |                                                               |
+| @@VARIABLE: inforce@@mtaq_inforce                  | 报价有效时间                            | abs(dif(InterpolatedTime)) or max((end-InterpolatedTime),0)            |
+| @@VARIABLE: wQuotedSpread_Dollar@@mtaq_wQuotedSpread_Dollar        | 时间加权美元报价价差                      | (BestOfr-BestBid)*inforce                                       |
+| @@VARIABLE: wQuotedSpread_Percent@@mtaq_wQuotedSpread_Percent       | 时间加权百分比报价价差                    | (log(BestOfr)-log(BestBid))*inforce                                |
+| @@VARIABLE: wTotalOfrDepth_Dollar@@mtaq_wTotalOfrDepth_Dollar    | 时间加权总卖出美元深度                     | BestOfr*TotalOfrDepth*inforce                                    |
+| @@VARIABLE: wTotalBidDepth_Dollar@@mtaq_wTotalBidDepth_Dollar    | 时间加权总买入美元深度                      | BestBid*TotalBidDepth*inforce                                    |
+| @@VARIABLE: wTotalOfrDepth_Share@@mtaq_wTotalOfrDepth_Share     | 时间加权总卖出股票深度                     | TotalOfrDepth*inforce                                           |
+| @@VARIABLE: wTotalBidDepth_Share@@mtaq_wTotalBidDepth_Share     | 时间加权总买入股票深度                     | TotalBidDepth*inforce                                           |
+| @@VARIABLE: wMaxOfrDepth_Dollar@@mtaq_wMaxOfrDepth_Dollar     | 时间加权最大卖出美元深度                      | BestOfr*MaxOfrDepth*inforce                                     |
+| @@VARIABLE: wMaxBidDepth_Dollar@@mtaq_wMaxBidDepth_Dollar     | 时间加权最大买入美元深度                     | BestBid*MaxBidDepth*inforce                                      |
+| @@VARIABLE: wMaxOfrDepth_Share@@mtaq_wMaxOfrDepth_Share      | 时间加权最大卖出股票深度                     | MaxOfrDepth*inforce                                             |
+| @@VARIABLE: wMaxBidDepth_Share@@mtaq_wMaxBidDepth_Share      | 时间加权最大买入股票深度                      | MaxBidDepth*inforce                                              |
+| @@VARIABLE: sumtime@@mtaq_sumtime                | 报价有效总时间                          |                                                                |
+| @@VARIABLE: swQuotedSpread_Dollar@@mtaq_swQuotedSpread_Dollar      | 报价价差（美元）时间加权总和                  |                                                                 |
+| @@VARIABLE: swQuotedSpread_Percent@@mtaq_swQuotedSpread_Percent     | 报价价差（百分比）时间加权总和                |                                                                 |
+| @@VARIABLE: swTotalOfrDepth_Dollar@@mtaq_swTotalOfrDepth_Dollar  | 总卖出深度（美元）时间加权总和                |                                                                 |
+| @@VARIABLE: swTotalBidDepth_Dollar@@mtaq_swTotalBidDepth_Dollar  | 总买入深度（美元）时间加权总和               |                                                                 |
+| @@VARIABLE: swTotalOfrDepth_Share@@mtaq_swTotalOfrDepth_Share   | 总卖出深度（股）时间加权总和                 |                                                                 |
+| @@VARIABLE: swTotalBidDepth_Share@@mtaq_swTotalBidDepth_Share   | 总买入深度（股）时间加权总和                |                                                                 |
+| @@VARIABLE: swMaxOfrDepth_Dollar@@mtaq_swMaxOfrDepth_Dollar    | 最大卖出深度（美元）时间加权总和                 |                                                                 |
+| @@VARIABLE: swMaxBidDepth_Dollar@@mtaq_swMaxBidDepth_Dollar    | 最大买入深度（美元）时间加权总和                 |                                                                |
+| @@VARIABLE: swMaxOfrDepth_Share@@mtaq_swMaxOfrDepth_Share     | 最大卖出深度（股）时间加权总和                |                                                                 |
+| @@VARIABLE: swMaxBidDepth_Share@@mtaq_swMaxBidDepth_Share     | 最大买入深度（股）时间加权总和                 |                                                                |
+| @@VARIABLE: QuotedSpread_Dollar@@mtaq_QuotedSpread_Dollar       | 时间加权平均美元报价价差                   | swQuotedSpread_Dollar/sumtime                                    |
+| @@VARIABLE: QuotedSpread_Percent@@mtaq_QuotedSpread_Percent      | 时间加权平均百分比报价价差                  | swQuotedSpread_Percent/sumtime                                    |
+| @@VARIABLE: TotalOfrDepth_Dollar@@mtaq_TotalOfrDepth_Dollar    | 时间加权平均总卖出美元深度                   | swTotalOfrDepth_Dollar/sumtime                                   |
+| @@VARIABLE: TotalBidDepth_Dollar@@mtaq_TotalBidDepth_Dollar     | 时间加权平均总买入美元深度                  | swTotalBidDepth_Dollar/sumtime                                  |
+| @@VARIABLE: TotalOfrDepth_Share@@mtaq_TotalOfrDepth_Share     | 时间加权平均总卖出股票深度                   | swTotalOfrDepth_Share/sumtime                                   |
+| @@VARIABLE: TotalBidDepth_Share@@mtaq_TotalBidDepth_Share     | 时间加权平均总买入股票深度                  | swTotalBidDepth_Share/sumtime                                  |
+| @@VARIABLE: MaxOfrDepth_Dollar@@mtaq_MaxOfrDepth_Dollar      | 时间加权平均最大卖出美元深度                    | swMaxOfrDepth_Dollar/sumtime                                     |
+| @@VARIABLE: MaxBidDepth_Dollar@@mtaq_MaxBidDepth_Dollar      | 时间加权平均最大买入美元深度                   | swMaxBidDepth_Dollar/sumtime                                     |
+| @@VARIABLE: MaxOfrDepth_Share@@mtaq_MaxOfrDepth_Share      | 时间加权平均最大卖出股票深度                  | swMaxOfrDepth_Share/sumtime                                      |
+| @@VARIABLE: MaxBidDepth_Share@@mtaq_MaxBidDepth_Share      | 时间加权平均最大买入股票深度                  | swMaxBidDepth_Share/sumtime                                      |
+| @@VARIABLE: wEffectiveSpread_Dollar@@mtaq_wEffectiveSpread_Dollar       | 有效价差（美元）                         | abs(price-midpoint)*2                                           |
+| @@VARIABLE: wEffectiveSpread_Percent@@mtaq_wEffectiveSpread_Percent      | 有效价差（百分比）                       | abs(log(price)-log(midpoint))*2                                  |
+| @@VARIABLE: dollar@@mtaq_dollar                 | 交易额                                | price*size                                                       |
+| @@VARIABLE: wEffectiveSpread_Dollar_DW@@mtaq_wEffectiveSpread_Dollar_DW    | 美元加权有效价差（美元）                   | wEffectiveSpread_Dollar*dollar                                 |
+| @@VARIABLE: wEffectiveSpread_Dollar_SW@@mtaq_wEffectiveSpread_Dollar_SW     | 股票加权有效价差（美元）                   | wEffectiveSpread_Dollar*size                                   |
+| @@VARIABLE: wEffectiveSpread_Percent_DW@@mtaq_wEffectiveSpread_Percent_DW   | 美元加权有效价差（百分比）                  | wEffectiveSpread_Percent*dollar                                |
+| @@VARIABLE: wEffectiveSpread_Percent_SW@@mtaq_wEffectiveSpread_Percent_SW   | 股票加权有效价差（百分比）                  | wEffectiveSpread_Percent*size                                  |
+| @@VARIABLE: sumdollar@@mtaq_sumdollar                | 交易额总和                             |                                                                  |
+| @@VARIABLE: sumsize@@mtaq_sumsize                | 交易量总和                             |                                                                  |
+| @@VARIABLE: EffectiveSpread_Dollar_Ave@@mtaq_EffectiveSpread_Dollar_Ave       | 平均有效价差（美元）                      |                                                                  |
+| @@VARIABLE: EffectiveSpread_Percent_Ave@@mtaq_EffectiveSpread_Percent_Ave      | 平均有效价差（百分比）                     |                                                                 |
+| @@VARIABLE: waEffectiveSpread_Dollar_DW@@mtaq_waEffectiveSpread_Dollar_DW    | 美元加权有效价差（美元）总和                 |                                                                |
+| @@VARIABLE: waEffectiveSpread_Dollar_SW@@mtaq_waEffectiveSpread_Dollar_SW    | 股票加权有效价差（美元）总和                 |                                                                |
+| @@VARIABLE: waEffectiveSpread_Percent_DW@@mtaq_waEffectiveSpread_Percent_DW  | 美元加权有效价差（百分比）总和               |                                                                 |
+| @@VARIABLE: waEffectiveSpread_Percent_SW@@mtaq_waEffectiveSpread_Percent_SW  | 股票加权有效价差（百分比）总和               |                                                                 |
+| @@VARIABLE: EffectiveSpread_Dollar_DW@@mtaq_EffectiveSpread_Dollar_DW     | 美元加权有效价差（美元）                    | waEffectiveSpread_Dollar_DW/sumdollar                              |
+| @@VARIABLE: EffectiveSpread_Dollar_SW@@mtaq_EffectiveSpread_Dollar_SW     | 股票加权有效价差（美元）                    | waEffectiveSpread_Dollar_SW/sumsize                            |
+| @@VARIABLE: EffectiveSpread_Percent_DW@@mtaq_EffectiveSpread_Percent_DW   | 美元加权有效价差（百分比）                  | waEffectiveSpread_Percent_DW/sumdollar                           |
+| @@VARIABLE: EffectiveSpread_Percent_SW@@mtaq_EffectiveSpread_Percent_SW    | 股票加权有效价差（百分比）                   | waEffectiveSpread_Percent_SW/sumsize                            |
+| @@VARIABLE: midpoint5@@mtaq_midpoint5                | 5分钟后的买卖价中点                       |                                                               |
+| @@VARIABLE: BestOfr5@@mtaq_BestOfr5                 | 5分钟后的最佳卖出价                        |                                                                |
+| @@VARIABLE: BestBid5@@mtaq_BestBid5                 | 5分钟后的最佳买入价                        |                                                                |
+| @@VARIABLE: wDollarRealizedSpread_CLNV@@mtaq_wDollarRealizedSpread_CLNV      | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元实现价差     | BuySellCLNV*(price-midpoint5)*2                                  |
+| @@VARIABLE: wPercentRealizedSpread_CLNV@@mtaq_wPercentRealizedSpread_CLNV     | Chakrabarty, Li, Nguyen, & Van Ness (2006) 百分比实现价差  | BuySellCLNV*(log(price)-log(midpoint5))*2                               |
+| @@VARIABLE: wDollarPriceImpact_CLNV@@mtaq_wDollarPriceImpact_CLNV      | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元价格冲击        | BuySellCLNV*(midpoint5-midpoint)*2                                 |
+| @@VARIABLE: wPercentPriceImpact_CLNV@@mtaq_wPercentPriceImpact_CLNV     | Chakrabarty, Li, Nguyen, & Van Ness (2006) 百分比价格冲击     | BuySellCLNV*(log(midpoint5)-log(midpoint))*2                                |
+| @@VARIABLE: wDollarRealizedSpread_CLNV_SW@@mtaq_wDollarRealizedSpread_CLNV_SW    |  Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权美元实现价差      | wDollarRealizedSpread_CLNV*size                         |
+| @@VARIABLE: wDollarRealizedSpread_CLNV_DW@@mtaq_wDollarRealizedSpread_CLNV_DW    | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权美元实现价差      | wDollarRealizedSpread_CLNV*dollar                         |
+| @@VARIABLE: wPercentRealizedSpread_CLNV_SW@@mtaq_wPercentRealizedSpread_CLNV_SW   | Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权百分比实现价差  | wPercentRealizedSpread_CLNV*size                             |
+| @@VARIABLE: wPercentRealizedSpread_CLNV_DW@@mtaq_wPercentRealizedSpread_CLNV_DW    | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权百分比实现价差  | wPercentRealizedSpread_CLNV*dollar                               |
+| @@VARIABLE: wDollarPriceImpact_CLNV_SW@@mtaq_wDollarPriceImpact_CLNV_SW     | Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权美元价格冲击   | wDollarPriceImpact_CLNV*size                              |
+| @@VARIABLE: wDollarPriceImpact_CLNV_DW@@mtaq_wDollarPriceImpact_CLNV_DW     | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权美元价格冲击    | wDollarPriceImpact_CLNV*dollar                            |
+| @@VARIABLE: wPercentPriceImpact_CLNV_SW@@mtaq_wPercentPriceImpact_CLNV_SW    |  Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权百分比价格冲击  | wPercentPriceImpact_CLNV*size                            |
+| @@VARIABLE: wPercentPriceImpact_CLNV_DW@@mtaq_wPercentPriceImpact_CLNV_DW     | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权百分比价格冲击   | wPercentPriceImpact_CLNV*dollar                         |
+| @@VARIABLE: DollarRealizedSpread_CLNV_Ave@@mtaq_DollarRealizedSpread_CLNV_Ave      | Chakrabarty, Li, Nguyen, & Van Ness (2006) 平均美元实现价差       |                                                                |
+| @@VARIABLE: PercentRealizedSpread_CLNV_Ave@@mtaq_PercentRealizedSpread_CLNV_Ave     | Chakrabarty, Li, Nguyen, & Van Ness (2006) 平均百分比实现价差      |                                                               |
+| @@VARIABLE: DollarPriceImpact_CLNV_Ave@@mtaq_DollarPriceImpact_CLNV_Ave       |  Chakrabarty, Li, Nguyen, & Van Ness (2006) 平均美元价格冲击        |                                                               |
+| @@VARIABLE: PercentPriceImpact_CLNV_Ave@@mtaq_PercentPriceImpact_CLNV_Ave      | Chakrabarty, Li, Nguyen, & Van Ness (2006) 平均百分比价格冲击      |                                                               |
+| @@VARIABLE: waDollarRealizedSpread_CLNV_SW@@mtaq_waDollarRealizedSpread_CLNV_SW  | Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权美元实现价差总和  |                                                                |
+| @@VARIABLE: waDollarRealizedSpread_CLNV_DW@@mtaq_waDollarRealizedSpread_CLNV_DW   |  Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权美元实现价差总和   |                                                                |
+| @@VARIABLE: waPercentRealizedSpread_CLNV_SW@@mtaq_waPercentRealizedSpread_CLNV_SW |Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权百分比实现价差总和  |                                                                |
+| @@VARIABLE: waPercentRealizedSpread_CLNV_DW@@mtaq_waPercentRealizedSpread_CLNV_DW  | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权百分比实现价差总和  |                                                                |
+| @@VARIABLE: waDollarPriceImpact_CLNV_SW@@mtaq_waDollarPriceImpact_CLNV_SW   |  Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权美元价格冲击总和      |                                                                |
+| @@VARIABLE: waDollarPriceImpact_CLNV_DW@@mtaq_waDollarPriceImpact_CLNV_DW    | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权美元价格冲击总和  |                                                                |
+| @@VARIABLE: waPercentPriceImpact_CLNV_SW@@mtaq_waPercentPriceImpact_CLNV_SW  | Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权百分比价格冲击总和   |                                                                |
+| @@VARIABLE: waPercentPriceImpact_CLNV_DW@@mtaq_waPercentPriceImpact_CLNV_DW  | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权百分比价格冲击总和   |                                                                |
+| @@VARIABLE: DollarRealizedSpread_CLNV_SW@@mtaq_DollarRealizedSpread_CLNV_SW   | Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权美元实现价差  | waDollarRealizedSpread_CLNV_SW/sumsize                  |
+| @@VARIABLE: DollarRealizedSpread_CLNV_DW@@mtaq_DollarRealizedSpread_CLNV_DW   |  Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权美元实现价差  | waDollarRealizedSpread_CLNV_DW/sumdollar                |
+| @@VARIABLE: PercentRealizedSpread_CLNV_SW@@mtaq_PercentRealizedSpread_CLNV_SW  | Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权百分比实现价差   | waPercentRealizedSpread_CLNV_SW/sumsize                |
+| @@VARIABLE: PercentRealizedSpread_CLNV_DW@@mtaq_PercentRealizedSpread_CLNV_DW   | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权百分比实现价差  | waPercentRealizedSpread_CLNV_DW/sumdollar                 |
+| @@VARIABLE: DollarPriceImpact_CLNV_SW@@mtaq_DollarPriceImpact_CLNV_SW    |  Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权美元价格冲击  | waDollarPriceImpact_CLNV_SW/sumsize                  |
+| @@VARIABLE: DollarPriceImpact_CLNV_DW@@mtaq_DollarPriceImpact_CLNV_DW    |  Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权美元价格冲击   | waDollarPriceImpact_CLNV_DW/sumdollar                   |
+| @@VARIABLE: PercentPriceImpact_CLNV_SW@@mtaq_PercentPriceImpact_CLNV_SW   | Chakrabarty, Li, Nguyen, & Van Ness (2006) 股票加权百分比价格冲击   | waPercentPriceImpact_CLNV_SW/sumsize                 |
+| @@VARIABLE: PercentPriceImpact_CLNV_DW@@mtaq_PercentPriceImpact_CLNV_DW   | Chakrabarty, Li, Nguyen, & Van Ness (2006) 美元加权百分比价格冲击   | waPercentPriceImpact_CLNV_DW/sumdollar                |
+*/
+
+/* 时间限制变量的时间范围
+| 变量名       | 时间范围       |
+|--------------|----------------|
+| date         | 20131016-20131017 |
+| time         | 9:00:00 - 16:00:00 |
+*/
+/* STEP 1: RETRIEVE MONTHLY TRADE AND QUOTE (MTAQ) FILES  */
+    libname taq '/wrds/taq/sasdata';
+
+    /* Retrieve Quote data */
+	@@BEGIN VARIABLE: symbol@@
+    data MonthlyQuote (drop=QSEQ);
+	@@END VARIABLE: symbol@@
+
+        /* Enter Quote file names in YYYYMMDD format for the dates you want*/
+        set taq.cq_20131016 taq.cq_20131017;
+		by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ @@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@;
+
+		/* Enter company tickers you want;  */
+        where @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ in ('AAPL','IBM')
+
+        /* If you wish to select dual shares, preferred shares, etc., 
+		   add a symbol suffix on the end of a symbol root. For example:
+        where symbol in ('AAPL','IBM','BRKA','BRKB') */
+
+        /* Quotes are retrieved prior to market open time to ensure that  
+		   NBBO quotes are available for beginning of the day trades*/
+        and (("9:00:00"t) <= @@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@ <= ("16:00:00"t));
+        format @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ date9.;
+    run;
+
+    /* Retrieve Trade data */
+	@@BEGIN VARIABLE: symbol@@
+    data MonthlyTrade (drop=G127 COND TSEQ);
+	@@END VARIABLE: symbol@@
+
+        /* Enter Trade file names in YYYYMMDD format for the same dates */
+        set taq.ct_20131016 taq.ct_20131017;
+		by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ @@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@;
+
+		/* Enter the same company tickers as above */
+        where @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ in ('AAPL','IBM') 
+
+        /* If you wish to select dual shares, preferred shares, etc., 
+		   add a symbol suffix on the end of a symbol root. For example:
+        where symbol in ('AAPL','IBM','BRKA','BRKB') */
+
+		/* Retrieve trades during normal market hours */
+        and (("9:30:00"t) <= @@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@ <= ("16:00:00"t));
+        @@BEGIN VARIABLE: type@@mtaq_type@@END VARIABLE: type@@='T';
+        format @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ date9.;
+    run;
+
+/* STEP 2: CLEAN QUOTE DATA */
+
+data MonthlyQuote;
+    set MonthlyQuote;
+
+    /* Quote Filter 1: Abnormal Modes. Quotes with abnormal modes (i.e.,  
+	   abnormal quote conditions) are set to extreme values so that they   
+	   will not enter the NBBO */
+    if @@BEGIN VARIABLE: mode@@mtaq_mode@@END VARIABLE: mode@@ in (4,7,9,11,13,14,15,19,20,27,28) then do; 
+        @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@=9999999; 
+        @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@=0; 
+    end;
+
+    /* Quote Filter 2: Crossed Quotes on the Same Exchange. Quotes from a 
+	   given exchange with positive values in which the Bid is greater than
+	   the Ask (i.e., crossed quotes) are set to extreme values so that they
+	   will not enter the NBBO */
+    If @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@>@@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@ and @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@>0 and @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@>0 then do; 
+        @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@=9999999; 
+        @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@=0; 
+    end;
+
+    /* Quote Filter 3: One-Sided Bid Quotes. One-sided bid quotes (i.e., 
+	   quotes in which the Bid is a positive value and the Ask is set to '0') 
+	   are allowed to enter the NBB; the Ask is set to an extreme value so 
+	   that it will not enter the NBO. One-sided ask quotes are also allowed 
+	   to enter the NBO (i.e., quotes in which the Ask is a positive value 
+	   and the Bid is set to '0'). In these cases, the bid is already the 
+	   extreme value 0; as a result, no adjustment is necessary to ensure it 
+	   does not enter the NBB. */
+    If @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@>0 and @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@=0 then @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@=9999999;
+
+    /* Quote Filter 4: Abnormally Large Spreads. Quotes with positive values  
+	   and large spreads (i.e., spreads greater than $5.00) are set to 
+	   extreme values so that they will not enter the NBBO */
+	@@BEGIN VARIABLE: spr@@
+    spr=@@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@-@@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@;
+	@@END VARIABLE: spr@@
+    If @@BEGIN VARIABLE: spr@@mtaq_spr@@END VARIABLE: spr@@>5 and @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@>0 and @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@>0 and @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@ ne 9999999 then do; 
+        @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@=0; @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@=9999999; end;
+/* Quote Filter 5: Withdrawn Quotes. This is when an exchange temporarily 
+		has no quote, as indicated by quotes with price or depth fields 
+		containing values less than or equal to 0 or equal to '.'. See 
+		discussion in Holden and Jacobsen (2013), page 11. They are set to 
+		extreme values so that they will not enter the NBBO. They are NOT 
+		deleted, because that would incorrectly allow the prior quote from 
+		that exchange to enter the NBBO. NOTE: Quote Filter 5 must come last
+	*/
+    if @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@ le 0 then @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@=9999999;
+    if @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@ =. then @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@=9999999;
+    if @@BEGIN VARIABLE: OFRSIZ@@mtaq_OFRSIZ@@END VARIABLE: OFRSIZ@@ le 0 then @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@=9999999;
+    if @@BEGIN VARIABLE: OFRSIZ@@mtaq_OFRSIZ@@END VARIABLE: OFRSIZ@@ =. then @@BEGIN VARIABLE: OFR@@mtaq_OFR@@END VARIABLE: OFR@@=9999999;
+    if @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@ le 0 then @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@=0;
+    if @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@ =. then @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@=0;
+    if @@BEGIN VARIABLE: BIDSIZ@@mtaq_BIDSIZ@@END VARIABLE: BIDSIZ@@ le 0 then @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@=0;
+    if @@BEGIN VARIABLE: BIDSIZ@@mtaq_BIDSIZ@@END VARIABLE: BIDSIZ@@ =. then @@BEGIN VARIABLE: BID@@mtaq_BID@@END VARIABLE: BID@@=0;
+run;
+
+/* STEP 3: CLEAN TRADE DATA */
+
+data MonthlyTrade;
+    set MonthlyTrade;
+
+    /* Trade Filter: Keep only trades in which the Correction field 
+       contains '00' and the Price field contains a value greater than 
+       zero */
+    where @@BEGIN VARIABLE: corr@@mtaq_corr@@END VARIABLE: corr@@ eq 0 and @@BEGIN VARIABLE: price@@mtaq_price@@END VARIABLE: price@@ gt 0;
+run;
+
+/* STEP 4: CREATE INTERPOLATED TIME VARIABLES 
+   Based on: Holden and Jacobsen (2013), pages 22-24 */
+
+/* Create Interpolated Quote Time for quote dataset */
+/* 'J' indexes the order of quotes within a given second */
+data MonthlyQuote (drop=MODE spr);
+    set MonthlyQuote;
+    retain @@BEGIN VARIABLE: J@@mtaq_J@@END VARIABLE: J@@;
+    by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ @@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@;
+    if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ or first.@@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@ then @@BEGIN VARIABLE: J@@mtaq_J@@END VARIABLE: J@@=1; else @@BEGIN VARIABLE: J@@mtaq_J@@END VARIABLE: J@@=@@BEGIN VARIABLE: J@@mtaq_J@@END VARIABLE: J@@+1;
+run;
+
+/* 'N' is the total number of quotes within a given second */
+proc sql;
+	create table monthlyquote2
+	as select a.*,  max(@@BEGIN VARIABLE: J@@mtaq_J@@END VARIABLE: J@@) as @@BEGIN VARIABLE: N@@mtaq_N@@END VARIABLE: N@@
+	from MonthlyQuote as a  
+	group by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@,@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@,@@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@
+	order by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@,@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@,@@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@,@@BEGIN VARIABLE: J@@mtaq_J@@END VARIABLE: J@@;
+quit; 
+
+data monthlyquote2 (drop=J N);
+    set monthlyquote2;
+    @@BEGIN VARIABLE: InterpolatedTime@@
+	InterpolatedTime=@@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@+((2*@@BEGIN VARIABLE: J@@mtaq_J@@END VARIABLE: J@@-1)/(2*@@BEGIN VARIABLE: N@@mtaq_N@@END VARIABLE: N@@));
+	@@END VARIABLE: InterpolatedTime@@
+    format InterpolatedTime best15.;
+run;
+
+/* Create Interpolated Trade Time for trade dataset */
+/* 'I' indexes the order of trades within a given second */
+data MonthlyTrade;
+    set MonthlyTrade;
+    retain @@BEGIN VARIABLE: I@@mtaq_I@@END VARIABLE: I@@;by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ @@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@;
+    if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ or first.@@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@ then @@BEGIN VARIABLE: I@@mtaq_I@@END VARIABLE: I@@=1; else @@BEGIN VARIABLE: I@@mtaq_I@@END VARIABLE: I@@=@@BEGIN VARIABLE: I@@mtaq_I@@END VARIABLE: I@@+1;
+run;
+
+/* 'N' is the total number of quotes within a given second */
+proc sql;
+	create table monthlytrade2
+	as select a.*,  max(@@BEGIN VARIABLE: I@@mtaq_I@@END VARIABLE: I@@) as @@BEGIN VARIABLE: N@@mtaq_N@@END VARIABLE: N@@
+	from MonthlyTrade as a  
+	group by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@,@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@,@@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@
+	order by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@,@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@,@@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@,@@BEGIN VARIABLE: I@@mtaq_I@@END VARIABLE: I@@;
+quit; 
+
+data monthlytrade2 (drop=I N);
+    set monthlytrade2;
+    InterpolatedTime=@@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@+((2*@@BEGIN VARIABLE: I@@mtaq_I@@END VARIABLE: I@@-1)/(2*@@BEGIN VARIABLE: N@@mtaq_N@@END VARIABLE: N@@));
+    tradetime=@@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@;
+    format InterpolatedTime best15.;
+    format tradetime time.;
+run;
+
+/* STEP 5: NATIONAL BEST BID AND OFFER (NBB0) CALCULATION */
+
+/* Assign ID to Each Unique Exchange or Market Maker and Find 
+   The Maximum Number of Exchanges*/
+proc sort data=monthlyquote2; 
+    by @@BEGIN VARIABLE: ex@@mtaq_ex@@END VARIABLE: ex@@ @@BEGIN VARIABLE: mmid@@mtaq_mmid@@END VARIABLE: mmid@@;
+run;
+
+data monthlyquote2;
+    set monthlyquote2;
+    retain ExchangeID;
+    if _N_=1 then ExchangeID=0;
+    if first.@@BEGIN VARIABLE: ex@@mtaq_ex@@END VARIABLE: ex@@ or first.@@BEGIN VARIABLE: mmid@@mtaq_mmid@@END VARIABLE: mmid@@ then ExchangeID=ExchangeID+1;
+    by @@BEGIN VARIABLE: ex@@mtaq_ex@@END VARIABLE: ex@@ @@BEGIN VARIABLE: mmid@@mtaq_mmid@@END VARIABLE: mmid@@;
+run;
+
+data _null_;
+ 	set monthlyquote2 end=eof;
+ 	retain MaxExchangeID;
+ 	if ExchangeID gt MaxExchangeID then MaxExchangeID=ExchangeID;
+ 	if eof then call symput('MaxExchangeID',MaxExchangeID);
+run;
+
+%put &MaxExchangeID;
+proc sort data=monthlyquote2; 
+    by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ @@BEGIN VARIABLE: time@@mtaq_time@@END VARIABLE: time@@ @@BEGIN VARIABLE: InterpolatedTime@@mtaq_InterpolatedTime@@END VARIABLE: InterpolatedTime@@;
+run;
+	
+%macro BBO;
+/* Create Dataset that has a Column for Each Exchange ID's Bid and Offer
+   Quote for All Interpolated Times and Multiply Bid Size and Offer Size
+   By 100 to convert Round Lots to Shares*/
+data monthlyquote2;
+    set monthlyquote2;
+	by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@;
+	array exbid(&MaxExchangeID);exbid(ExchangeID)=bid;
+	array exofr(&MaxExchangeID);exofr(ExchangeID)=ofr;
+	array exbidsz(&MaxExchangeID);exbidsz(ExchangeID)=bidsiz*100;
+	array exofrsz(&MaxExchangeID);exofrsz(ExchangeID)=ofrsiz*100;
+/* For Interpolated Times with No Quote Update, Retain Previous Quote 
+   Outstanding*/
+%do i=1 %to &MaxExchangeID;
+	retain exbidR&i exofrR&i exbidszR&i exofrszR&i;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ then exbidR&i=exbid&i;
+    if exbid&i ge 0 then exbidR&i=exbid&i; 
+        else exbidR&i=exbidR&i+0;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ then exofrR&i=exofr&i;
+    if exofr&i ge 0 then exofrR&i=exofr&i; 
+        else exofrR&i=exofrR&i+0;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ then exbidszR&i=exbidsz&i;
+    if exbidsz&i ge 0 then exbidszR&i=exbidsz&i; 
+        else exbidszR&i=exbidszR&i+0;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ then exofrszR&i=exofrsz&i;
+    if exofrsz&i ge 0 then exofrszR&i=exofrsz&i; 
+        else exofrszR&i=exofrszR&i+0;
+%end;
+/* Find Best Bid and Offer Across All Exchanges and Market Makers*/
+%do i=&MaxExchangeID %to &MaxExchangeID;
+	@@BEGIN VARIABLE: BestBid@@
+	BestBid = max(of exbidR1-exbidR&i);
+	@@END VARIABLE: BestBid@@
+	@@BEGIN VARIABLE: BestOfr@@
+	BestOfr = min(of exofrR1-exofrR&i);
+	@@END VARIABLE: BestOfr@@
+%end;
+/* Find Best and Total Depth Across All Exchanges and Market Makers that
+   are at the NBBO*/
+%do i=1 %to &MaxExchangeID;
+	if exbidR&i=@@BEGIN VARIABLE: BestBid@@BestBid@@END VARIABLE: BestBid@@ then @@BEGIN VARIABLE: MaxBidDepth@@MaxBidDepth@@END VARIABLE: MaxBidDepth@@=max(MaxBidDepth,exbidszR&i);
+	if exofrR&i=@@BEGIN VARIABLE: BestOfr@@BestOfr@@END VARIABLE: BestOfr@@ then @@BEGIN VARIABLE: MaxOfrDepth@@MaxOfrDepth@@END VARIABLE: MaxOfrDepth@@=max(MaxOfrDepth,exofrszR&i);
+	if exbidR&i=@@BEGIN VARIABLE: BestBid@@BestBid@@END VARIABLE: BestBid@@ then @@BEGIN VARIABLE: TotalBidDepth@@TotalBidDepth@@END VARIABLE: TotalBidDepth@@=sum(TotalBidDepth,exbidszR&i);
+	if exofrR&i=@@BEGIN VARIABLE: BestOfr@@BestOfr@@END VARIABLE: BestOfr@@ then @@BEGIN VARIABLE: TotalOfrDepth@@TotalOfrDepth@@END VARIABLE: TotalOfrDepth@@=sum(TotalOfrDepth,exofrszR&i);
+%end;
+run;
+%mend BBO;
+%BBO;
+
+
+data CompleteNBBO (keep=symbol date time InterpolatedTime 
+    @@BEGIN VARIABLE: BestBid@@BestBid@@END VARIABLE: BestBid@@ @@BEGIN VARIABLE: BestOfr@@BestOfr@@END VARIABLE: BestOfr@@ @@BEGIN VARIABLE: MaxBidDepth@@MaxBidDepth@@END VARIABLE: MaxBidDepth@@ @@BEGIN VARIABLE: MaxOfrDepth@@MaxOfrDepth@@END VARIABLE: MaxOfrDepth@@ @@BEGIN VARIABLE: TotalBidDepth@@TotalBidDepth@@END VARIABLE: TotalBidDepth@@ @@BEGIN VARIABLE: TotalOfrDepth@@TotalOfrDepth@@END VARIABLE: TotalOfrDepth@@);
+    set monthlyquote2;
+/* Only Output Changes in NBBO Records (e.g., changes in quotes or depth)*/
+    if @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ eq lag(@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@) 
+        and @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ eq lag(@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@) 
+        and @@BEGIN VARIABLE: BestOfr@@BestOfr@@END VARIABLE: BestOfr@@ eq lag(@@BEGIN VARIABLE: BestOfr@@BestOfr@@END VARIABLE: BestOfr@@) 
+        and @@BEGIN VARIABLE: BestBid@@BestBid@@END VARIABLE: BestBid@@ eq lag(@@BEGIN VARIABLE: BestBid@@BestBid@@END VARIABLE: BestBid@@) 
+        and @@BEGIN VARIABLE: MaxOfrDepth@@MaxOfrDepth@@END VARIABLE: MaxOfrDepth@@ eq lag(@@BEGIN VARIABLE: MaxOfrDepth@@MaxOfrDepth@@END VARIABLE: MaxOfrDepth@@) 
+        and @@BEGIN VARIABLE: MaxBidDepth@@MaxBidDepth@@END VARIABLE: MaxBidDepth@@ eq lag(@@BEGIN VARIABLE: MaxBidDepth@@MaxBidDepth@@END VARIABLE: MaxBidDepth@@)
+        and @@BEGIN VARIABLE: TotalOfrDepth@@TotalOfrDepth@@END VARIABLE: TotalOfrDepth@@ eq lag(@@BEGIN VARIABLE: TotalOfrDepth@@TotalOfrDepth@@END VARIABLE: TotalOfrDepth@@) 
+        and @@BEGIN VARIABLE: TotalBidDepth@@TotalBidDepth@@END VARIABLE: TotalBidDepth@@ eq lag(@@BEGIN VARIABLE: TotalBidDepth@@TotalBidDepth@@END VARIABLE: TotalBidDepth@@) then delete;
+/* If Abnormal Quotes Enter the NBBO Then Set To ".". There Will Be 
+   NO NBBO */
+    if @@BEGIN VARIABLE: BestBid@@BestBid@@END VARIABLE: BestBid@@ < .00001 then 
+        do;
+        @@BEGIN VARIABLE: BestBid@@BestBid@@END VARIABLE: BestBid@@=.;
+        @@BEGIN VARIABLE: BestOfr@@BestOfr@@END VARIABLE: BestOfr@@=.;
+        @@BEGIN VARIABLE: MaxOfrDepth@@MaxOfrDepth@@END VARIABLE: MaxOfrDepth@@=.;
+        @@BEGIN VARIABLE: MaxBidDepth@@MaxBidDepth@@END VARIABLE: MaxBidDepth@@=.;
+        @@BEGIN VARIABLE: TotalOfrDepth@@TotalOfrDepth@@END VARIABLE: TotalOfrDepth@@=.;
+        @@BEGIN VARIABLE: TotalBidDepth@@TotalBidDepth@@END VARIABLE: TotalBidDepth@@=.;
+        end;
+    else if @@BEGIN VARIABLE: BestOfr@@BestOfr@@END VARIABLE: BestOfr@@ > 9999998 then 
+        do;
+        @@BEGIN VARIABLE: BestBid@@BestBid@@END VARIABLE: BestBid@@=.; 
+        @@BEGIN VARIABLE: BestOfr@@BestOfr@@END VARIABLE: BestOfr@@=.;
+        @@BEGIN VARIABLE: MaxOfrDepth@@MaxOfrDepth@@END VARIABLE: MaxOfrDepth@@=.;
+        @@BEGIN VARIABLE: MaxBidDepth@@MaxBidDepth@@END VARIABLE: MaxBidDepth@@=.;
+        @@BEGIN VARIABLE: TotalOfrDepth@@TotalOfrDepth@@END VARIABLE: TotalOfrDepth@@=.;
+        @@BEGIN VARIABLE: TotalBidDepth@@TotalBidDepth@@END VARIABLE: TotalBidDepth@@=.;
+        end;
+run;
+
+/* STEP 6: INTERWEAVE TRADES WITH QUOTES: TRADES AT INTERPOLATED TIME TMMM
+   ARE MATCHED WITH QUOTES IN FORCE AT INTERPOLATED TIME TMM(M-1)
+   To Do This, Increase Interpolated Quote Time in Quotes Dataset by One
+   Millisecond = .001*/
+
+data CompleteNBBO;
+    set CompleteNBBO;
+    @@BEGIN VARIABLE: type@@
+	type='Q';
+	@@END VARIABLE: type@@
+    InterpolatedTime+.001;
+run;
+
+/* Stack Quotes and Trades Datasets */
+data TradesandCorrespondingNBBO;
+    set monthlytrade2 CompleteNBBO;
+    by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ @@BEGIN VARIABLE: InterpolatedTime@@mtaq_InterpolatedTime@@END VARIABLE: InterpolatedTime@@ @@BEGIN VARIABLE: type@@mtaq_type@@END VARIABLE: type@@;
+run;
+
+/* For Each Trade, Identify the Outstanding NBBO, Best Depth and Total 
+   Depth */
+data TradesandCorrespondingNBBOv2 (drop=time BestOfr BestBid 
+     MaxOfrDepth MaxBidDepth TotalOfrDepth TotalBidDepth corr);
+    set TradesandCorrespondingNBBO;
+    by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@;
+    retain @@BEGIN VARIABLE: quotetime@@mtaq_quotetime@@END VARIABLE: quotetime@@ @@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@ @@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@ @@BEGIN VARIABLE: MaxOfrDepth2@@mtaq_MaxOfrDepth2@@END VARIABLE: MaxOfrDepth2@@ @@BEGIN VARIABLE: MaxBidDepth2@@mtaq_MaxBidDepth2@@END VARIABLE: MaxBidDepth2@@ 
+        @@BEGIN VARIABLE: TotalOfrDepth2@@mtaq_TotalOfrDepth2@@END VARIABLE: TotalOfrDepth2@@ @@BEGIN VARIABLE: TotalBidDepth2@@mtaq_TotalBidDepth2@@END VARIABLE: TotalBidDepth2@@;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ and type='T' then @@BEGIN VARIABLE: quotetime@@mtaq_quotetime@@END VARIABLE: quotetime@@=.;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ and type='T' then @@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@=.;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ and type='T' then @@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@=.;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ and type='T' then @@BEGIN VARIABLE: MaxOfrDepth2@@mtaq_MaxOfrDepth2@@END VARIABLE: MaxOfrDepth2@@=.;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ and type='T' then @@BEGIN VARIABLE: MaxBidDepth2@@mtaq_MaxBidDepth2@@END VARIABLE: MaxBidDepth2@@=.;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ and type='T' then @@BEGIN VARIABLE: TotalOfrDepth2@@mtaq_TotalOfrDepth2@@END VARIABLE: TotalOfrDepth2@@=.;
+	if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ or first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ and type='T' then @@BEGIN VARIABLE: TotalBidDepth2@@mtaq_TotalBidDepth2@@END VARIABLE: TotalBidDepth2@@=.;
+    if type='Q' then @@BEGIN VARIABLE: quotetime@@mtaq_quotetime@@END VARIABLE: quotetime@@=time;else @@BEGIN VARIABLE: quotetime@@mtaq_quotetime@@END VARIABLE: quotetime@@=@@BEGIN VARIABLE: quotetime@@mtaq_quotetime@@END VARIABLE: quotetime@@;
+    if type='Q' then @@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@=BestOfr;else @@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@=@@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@;
+    if type='Q' then @@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@=BestBid;else @@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@=@@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@;
+    if type='Q' then @@BEGIN VARIABLE: MaxOfrDepth2@@mtaq_MaxOfrDepth2@@END VARIABLE: MaxOfrDepth2@@=MaxOfrDepth;else @@BEGIN VARIABLE: MaxOfrDepth2@@mtaq_MaxOfrDepth2@@END VARIABLE: MaxOfrDepth2@@=@@BEGIN VARIABLE: MaxOfrDepth2@@mtaq_MaxOfrDepth2@@END VARIABLE: MaxOfrDepth2@@;
+    if type='Q' then @@BEGIN VARIABLE: MaxBidDepth2@@mtaq_MaxBidDepth2@@END VARIABLE: MaxBidDepth2@@=MaxBidDepth;else @@BEGIN VARIABLE: MaxBidDepth2@@mtaq_MaxBidDepth2@@END VARIABLE: MaxBidDepth2@@=@@BEGIN VARIABLE: MaxBidDepth2@@mtaq_MaxBidDepth2@@END VARIABLE: MaxBidDepth2@@;
+    if type='Q' then @@BEGIN VARIABLE: TotalOfrDepth2@@mtaq_TotalOfrDepth2@@END VARIABLE: TotalOfrDepth2@@=TotalOfrDepth;
+        else @@BEGIN VARIABLE: TotalOfrDepth2@@mtaq_TotalOfrDepth2@@END VARIABLE: TotalOfrDepth2@@=@@BEGIN VARIABLE: TotalOfrDepth2@@mtaq_TotalOfrDepth2@@END VARIABLE: TotalOfrDepth2@@;
+    if type='Q' then @@BEGIN VARIABLE: TotalBidDepth2@@mtaq_TotalBidDepth2@@END VARIABLE: TotalBidDepth2@@=TotalBidDepth;
+        else @@BEGIN VARIABLE: TotalBidDepth2@@mtaq_TotalBidDepth2@@END VARIABLE: TotalBidDepth2@@=@@BEGIN VARIABLE: TotalBidDepth2@@mtaq_TotalBidDepth2@@END VARIABLE: TotalBidDepth2@@;
+    format @@BEGIN VARIABLE: quotetime@@mtaq_quotetime@@END VARIABLE: quotetime@@ time.;
+run;
+
+/* STEP 7: Classify Trades as "Buys" or "Sells" Using Three Conventions: 
+   LR = Lee and Ready (1991), EMO = Ellis, Michaely and O扝ara (2000)
+   and CLNV = Chakrabarty, Li, Nguyen, and Van Ness (2006); Determine NBBO 
+   Midpoint and Locked and Crossed NBBOs */
+
+data BuySellIndicators;
+    set TradesandCorrespondingNBBOv2;
+    where type='T';
+    @@BEGIN VARIABLE: midpoint@@
+	midpoint=(@@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@+@@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@)/2;
+	@@END VARIABLE: midpoint@@
+    if @@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@=@@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@ then @@BEGIN VARIABLE: lock@@mtaq_lock@@END VARIABLE: lock@@=1;else @@BEGIN VARIABLE: lock@@mtaq_lock@@END VARIABLE: lock@@=0;
+    if @@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@<@@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@ then @@BEGIN VARIABLE: cross@@mtaq_cross@@END VARIABLE: cross@@=1;else @@BEGIN VARIABLE: cross@@mtaq_cross@@END VARIABLE: cross@@=0;
+run;
+
+/* Determine Whether Trade Price is Higher or Lower than Previous Trade 
+   Price, or "Trade Direction" */
+data BuySellIndicators;
+    set BuySellIndicators;
+    by @@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ @@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@;
+    @@BEGIN VARIABLE: direction@@
+	direction=dif(@@BEGIN VARIABLE: price@@mtaq_price@@END VARIABLE: price@@);
+	@@END VARIABLE: direction@@
+    if first.@@BEGIN VARIABLE: symbol@@mtaq_symbol@@END VARIABLE: symbol@@ then @@BEGIN VARIABLE: direction@@direction@@END VARIABLE: direction@@=.;
+    if first.@@BEGIN VARIABLE: date@@mtaq_date@@END VARIABLE: date@@ then @@BEGIN VARIABLE: direction@@direction@@END VARIABLE: direction@@=.;
+run;
+
+data BuySellIndicators;
+    set BuySellIndicators;
+    retain @@BEGIN VARIABLE: direction2@@mtaq_direction2@@END VARIABLE: direction2@@;
+    if @@BEGIN VARIABLE: direction@@direction@@END VARIABLE: direction@@ ne 0 then @@BEGIN VARIABLE: direction2@@mtaq_direction2@@END VARIABLE: direction2@@=@@BEGIN VARIABLE: direction@@direction@@END VARIABLE: direction@@; 
+    else @@BEGIN VARIABLE: direction2@@mtaq_direction2@@END VARIABLE: direction2@@=@@BEGIN VARIABLE: direction2@@mtaq_direction2@@END VARIABLE: direction2@@;
+run;
+
+/* First Classification Step: Classify Trades Using Tick Test */
+data BuySellIndicators (drop=direction);
+    set BuySellIndicators;
+	length @@BEGIN VARIABLE: BuySellLR@@mtaq_BuySellLR@@END VARIABLE: BuySellLR@@ @@BEGIN VARIABLE: BuySellEMO@@mtaq_BuySellEMO@@END VARIABLE: BuySellEMO@@ @@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@ $4.;
+    if  direction2>0 then @@BEGIN VARIABLE: BuySellLR@@mtaq_BuySellLR@@END VARIABLE: BuySellLR@@=1;
+    if  direction2<0 then @@BEGIN VARIABLE: BuySellLR@@mtaq_BuySellLR@@END VARIABLE: BuySellLR@@=-1;
+    if  direction2=. then @@BEGIN VARIABLE: BuySellLR@@mtaq_BuySellLR@@END VARIABLE: BuySellLR@@=.;
+    if  direction2>0 then @@BEGIN VARIABLE: BuySellEMO@@mtaq_BuySellEMO@@END VARIABLE: BuySellEMO@@=1;
+    if  direction2<0 then @@BEGIN VARIABLE: BuySellEMO@@mtaq_BuySellEMO@@END VARIABLE: BuySellEMO@@=-1;
+    if  direction2=. then @@BEGIN VARIABLE: BuySellEMO@@mtaq_BuySellEMO@@END VARIABLE: BuySellEMO@@=.;
+    if  direction2>0 then @@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@=1;
+    if  direction2<0 then @@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@=-1;
+    if  direction2=. then @@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@=.;
+run;
+
+/* Second Classification Step: Update Trade Classification When 
+   Conditions are Met as Specified by LR, EMO, and CLNV */
+data BuySellIndicators;
+    set BuySellIndicators;
+    if  lock=0 and  cross=0 and  price gt  midpoint then @@BEGIN VARIABLE: BuySellLR@@mtaq_BuySellLR@@END VARIABLE: BuySellLR@@=1;
+    if  lock=0 and  cross=0 and  price lt  midpoint then @@BEGIN VARIABLE: BuySellLR@@mtaq_BuySellLR@@END VARIABLE: BuySellLR@@=-1;
+    if  lock=0 and  cross=0 and  price= @@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@ then @@BEGIN VARIABLE: BuySellEMO@@mtaq_BuySellEMO@@END VARIABLE: BuySellEMO@@=1;
+    if  lock=0 and  cross=0 and  price= @@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@ then @@BEGIN VARIABLE: BuySellEMO@@mtaq_BuySellEMO@@END VARIABLE: BuySellEMO@@=-1;
+    ofr30= @@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@-.3*(@@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@-@@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@);
+    bid30=@@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@+.3*(@@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@-@@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@);
+    if  lock=0 and  cross=0 and  price le @@BEGIN VARIABLE: BestOfr2@@mtaq_BestOfr2@@END VARIABLE: BestOfr2@@ and  price ge ofr30
+        then @@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@=1;
+    if  lock=0 and  cross=0 and  price le bid30 and  price ge @@BEGIN VARIABLE: BestBid2@@mtaq_BestBid2@@END VARIABLE: BestBid2@@ 
+        then @@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@=-1;
+run;
+
+/* STEP 8: CALCULATE QUOTED SRPEADS AND DEPTHS */
+
+/* Use Quotes During Normal Market Hours */
+data QSpread1;
+    set CompleteNBBO;
+    if time lt ("9:30:00"t) then delete;
+run;
+
+/* Determine Time Each Quote is In Force Based on Interpolated Time */
+proc sort data=QSpread1;
+    by symbol date descending InterpolatedTime;
+run;
+
+data QSpread1;
+    set QSpread1;
+    by symbol date;
+    @@BEGIN VARIABLE: inforce@@
+	inforce=abs(dif(InterpolatedTime));
+	@@END VARIABLE: inforce@@
+run;
+
+/* If Last Quote of Day, then Quote is Inforce Until 4:00 pm */
+data QSpread1;
+    set QSpread1;
+    by symbol date;
+    end=57600;   /* 4:00 pm = 57,600 seconds after midnight  */
+    if first.symbol or first.date 
+    then @@BEGIN VARIABLE: inforce@@inforce@@END VARIABLE: inforce@@=max((end-InterpolatedTime),0);
+run;
+
+proc sort data=QSpread1 (drop=end);
+    by symbol date InterpolatedTime;
+run;
+
+/* Find Midpoint */
+data QSpread1;
+    set QSpread1;
+	@@BEGIN VARIABLE: midpoint@@
+    midpoint=(BestOfr+BestBid)/2;
+	@@END VARIABLE: midpoint@@
+run;
+
+data QSpread2;
+    set QSpread1;
+/* Delete Locked and Crossed Quotes */
+    if BestOfr=BestBid or BestOfr<BestBid then delete;
+/* Multiply Dollar Quoted Spread, Percent Quoted Spread, Maximum Dollar 
+   Depth, Maximum Share Depth, Total Dollar Depth, and Total Share 
+   Depth by Time Inforce */
+   @@BEGIN VARIABLE: wQuotedSpread_Dollar@@
+    wQuotedSpread_Dollar=(BestOfr-BestBid)*inforce;
+	@@END VARIABLE: wQuotedSpread_Dollar@@
+	@@BEGIN VARIABLE: wQuotedSpread_Percent@@
+    wQuotedSpread_Percent=(log(BestOfr)-log(BestBid))*inforce;
+	@@END VARIABLE: wQuotedSpread_Percent@@
+	@@BEGIN VARIABLE: wTotalOfrDepth_Dollar@@
+    wTotalOfrDepth_Dollar=BestOfr*TotalOfrDepth*inforce;
+	@@END VARIABLE: wTotalOfrDepth_Dollar@@
+    @@BEGIN VARIABLE: wTotalBidDepth_Dollar@@
+	wTotalBidDepth_Dollar=BestBid*TotalBidDepth*inforce;
+	@@END VARIABLE: wTotalBidDepth_Dollar@@
+    @@BEGIN VARIABLE: wTotalOfrDepth_Share@@
+	wTotalOfrDepth_Share=TotalOfrDepth*inforce;
+	@@END VARIABLE: wTotalOfrDepth_Share@@
+	@@BEGIN VARIABLE: wTotalBidDepth_Share@@
+    wTotalBidDepth_Share=TotalBidDepth*inforce;
+	@@END VARIABLE: wTotalBidDepth_Share@@
+	@@BEGIN VARIABLE: wMaxOfrDepth_Dollar@@
+    wMaxOfrDepth_Dollar=BestOfr*MaxOfrDepth*inforce;
+	@@END VARIABLE: wMaxOfrDepth_Dollar@@
+	@@BEGIN VARIABLE: wMaxBidDepth_Dollar@@
+    wMaxBidDepth_Dollar=BestBid*MaxBidDepth*inforce;
+	@@END VARIABLE: wMaxBidDepth_Dollar@@
+	@@BEGIN VARIABLE: wMaxOfrDepth_Share@@
+    wMaxOfrDepth_Share=MaxOfrDepth*inforce;
+	@@END VARIABLE: wMaxOfrDepth_Share@@
+	@@BEGIN VARIABLE: wMaxBidDepth_Share@@
+    wMaxBidDepth_Share=MaxBidDepth*inforce;
+	@@END VARIABLE: wMaxBidDepth_Share@@
+run;
+
+/* Find Average Across Firm-Day */
+proc sql;
+    create table QuotedSpreadsandDepths 
+    as select symbol,date,
+    sum(inforce) as @@BEGIN VARIABLE: sumtime@@sumtime@@END VARIABLE: sumtime@@,
+    sum(wQuotedSpread_Dollar) as @@BEGIN VARIABLE: swQuotedSpread_Dollar@@swQuotedSpread_Dollar@@END VARIABLE: swQuotedSpread_Dollar@@,
+    sum(wQuotedSpread_Percent) as @@BEGIN VARIABLE: swQuotedSpread_Percent@@swQuotedSpread_Percent@@END VARIABLE: swQuotedSpread_Percent@@,
+    sum(wTotalOfrDepth_Dollar) as @@BEGIN VARIABLE: swTotalOfrDepth_Dollar@@swTotalOfrDepth_Dollar@@END VARIABLE: swTotalOfrDepth_Dollar@@,
+    sum(wTotalBidDepth_Dollar) as @@BEGIN VARIABLE: swTotalBidDepth_Dollar@@swTotalBidDepth_Dollar@@END VARIABLE: swTotalBidDepth_Dollar@@,
+    sum(wTotalOfrDepth_Share) as @@BEGIN VARIABLE: swTotalOfrDepth_Share@@swTotalOfrDepth_Share@@END VARIABLE: swTotalOfrDepth_Share@@,
+    sum(wTotalBidDepth_Share) as @@BEGIN VARIABLE: swTotalBidDepth_Share@@swTotalBidDepth_Share@@END VARIABLE: swTotalBidDepth_Share@@,
+    sum(wMaxOfrDepth_Dollar) as @@BEGIN VARIABLE: swMaxOfrDepth_Dollar@@swMaxOfrDepth_Dollar@@END VARIABLE: swMaxOfrDepth_Dollar@@,
+    sum(wMaxBidDepth_Dollar) as @@BEGIN VARIABLE: swMaxBidDepth_Dollar@@swMaxBidDepth_Dollar@@END VARIABLE: swMaxBidDepth_Dollar@@,
+    sum(wMaxOfrDepth_Share) as @@BEGIN VARIABLE: swMaxOfrDepth_Share@@swMaxOfrDepth_Share@@END VARIABLE: swMaxOfrDepth_Share@@,
+    sum(wMaxBidDepth_Share) as @@BEGIN VARIABLE: swMaxBidDepth_Share@@swMaxBidDepth_Share@@END VARIABLE: swMaxBidDepth_Share@@
+    from QSpread2 
+    group by symbol,date 
+    order by symbol,date;
+quit;
+
+/* Calculate Time-Weighted Dollar Quoted Spread, Percent Quoted Spread, 
+   Maximum Dollar Depth, Maximum Share Depth, Total Dollar Depth, and 
+   Total Share Depth */
+data QuotedSpreadsandDepths;
+    set QuotedSpreadsandDepths;
+	@@BEGIN VARIABLE: QuotedSpread_Dollar@@
+    QuotedSpread_Dollar=swQuotedSpread_Dollar/sumtime;
+	@@END VARIABLE: QuotedSpread_Dollar@@
+	@@BEGIN VARIABLE: QuotedSpread_Percent@@
+    QuotedSpread_Percent=swQuotedSpread_Percent/sumtime;
+	@@END VARIABLE: QuotedSpread_Percent@@
+	@@BEGIN VARIABLE: TotalOfrDepth_Dollar@@
+    TotalOfrDepth_Dollar=swTotalOfrDepth_Dollar/sumtime;
+	@@END VARIABLE: TotalOfrDepth_Dollar@@
+	@@BEGIN VARIABLE: TotalBidDepth_Dollar@@
+    TotalBidDepth_Dollar=swTotalBidDepth_Dollar/sumtime;
+	@@END VARIABLE: TotalBidDepth_Dollar@@
+	@@BEGIN VARIABLE: TotalOfrDepth_Share@@
+    TotalOfrDepth_Share=swTotalOfrDepth_Share/sumtime;
+	@@END VARIABLE: TotalOfrDepth_Share@@
+	@@BEGIN VARIABLE: TotalBidDepth_Share@@
+    TotalBidDepth_Share=swTotalBidDepth_Share/sumtime;
+	@@END VARIABLE: TotalBidDepth_Share@@
+	@@BEGIN VARIABLE: MaxOfrDepth_Dollar@@
+    MaxOfrDepth_Dollar=swMaxOfrDepth_Dollar/sumtime;
+	@@END VARIABLE: MaxOfrDepth_Dollar@@
+	@@BEGIN VARIABLE: MaxBidDepth_Dollar@@
+    MaxBidDepth_Dollar=swMaxBidDepth_Dollar/sumtime;
+	@@END VARIABLE: MaxBidDepth_Dollar@@
+	@@BEGIN VARIABLE: MaxOfrDepth_Share@@
+    MaxOfrDepth_Share=swMaxOfrDepth_Share/sumtime;
+	@@END VARIABLE: MaxOfrDepth_Share@@
+	@@BEGIN VARIABLE: MaxBidDepth_Share@@
+    MaxBidDepth_Share=swMaxBidDepth_Share/sumtime;
+	@@END VARIABLE: MaxBidDepth_Share@@
+	drop swQuotedSpread_Dollar swQuotedSpread_Percent 
+         swTotalOfrDepth_Dollar swTotalBidDepth_Dollar
+         swTotalOfrDepth_Share swTotalBidDepth_Share
+         swMaxOfrDepth_Dollar swMaxBidDepth_Dollar
+         swMaxOfrDepth_Share swMaxBidDepth_Share;
+run;
+
+/* STEP 9: CALCULATE EFFECTIVE SPREADS; AGGREGATE BASED ON 3 CONVENTIONS:
+   Ave = SIMPLE AVERAGE, DW = DOLLAR-WEIGHTED, SW = SHARE-WEIGHTED */
+
+data BuySellIndicators;
+    set BuySellIndicators;
+	@@BEGIN VARIABLE: wEffectiveSpread_Dollar@@
+    wEffectiveSpread_Dollar=(abs(price-midpoint))*2;
+	@@END VARIABLE: wEffectiveSpread_Dollar@@
+	@@BEGIN VARIABLE: wEffectiveSpread_Percent@@
+    wEffectiveSpread_Percent=abs(log(price)-log(midpoint))*2;
+	@@END VARIABLE: wEffectiveSpread_Percent@@
+	@@BEGIN VARIABLE: dollar@@
+    dollar=price*size;
+	@@END VARIABLE: dollar@@
+	@@BEGIN VARIABLE: wEffectiveSpread_Dollar_DW@@
+    wEffectiveSpread_Dollar_DW=wEffectiveSpread_Dollar*dollar;
+	@@END VARIABLE: wEffectiveSpread_Dollar_DW@@
+	@@BEGIN VARIABLE: wEffectiveSpread_Dollar_SW@@
+    wEffectiveSpread_Dollar_SW=wEffectiveSpread_Dollar*size;
+	@@END VARIABLE: wEffectiveSpread_Dollar_SW@@
+	@@BEGIN VARIABLE: wEffectiveSpread_Percent_DW@@
+    wEffectiveSpread_Percent_DW=wEffectiveSpread_Percent*dollar;
+	@@END VARIABLE: wEffectiveSpread_Percent_DW@@
+	@@BEGIN VARIABLE: wEffectiveSpread_Percent_SW@@
+    wEffectiveSpread_Percent_SW=wEffectiveSpread_Percent*size;
+	@@END VARIABLE: wEffectiveSpread_Percent_SW@@
+run;
+
+/* Delete Trades Associated with Locked or Crossed Best Bids or Best 
+   Offers */
+data TSpread2;
+    set BuySellIndicators;
+    if lock=1 or cross=1 then delete;
+run;
+
+/* Find average across firm-day */
+proc sql;
+    create table EffectiveSpreads 
+    as select symbol,date,
+    sum(dollar) as @@BEGIN VARIABLE: sumdollar@@sumdollar@@END VARIABLE: sumdollar@@,
+    sum(size) as @@BEGIN VARIABLE: sumsize@@sumsize@@END VARIABLE: sumsize@@,
+    mean(wEffectiveSpread_Dollar) as @@BEGIN VARIABLE: EffectiveSpread_Dollar_Ave@@EffectiveSpread_Dollar_Ave@@END VARIABLE: EffectiveSpread_Dollar_Ave@@,
+    mean(wEffectiveSpread_Percent) as @@BEGIN VARIABLE: EffectiveSpread_Percent_Ave@@EffectiveSpread_Percent_Ave@@END VARIABLE: EffectiveSpread_Percent_Ave@@,
+    sum(wEffectiveSpread_Dollar_DW) as @@BEGIN VARIABLE: waEffectiveSpread_Dollar_DW@@waEffectiveSpread_Dollar_DW@@END VARIABLE: waEffectiveSpread_Dollar_DW@@,
+    sum(wEffectiveSpread_Dollar_SW) as @@BEGIN VARIABLE: waEffectiveSpread_Dollar_SW@@waEffectiveSpread_Dollar_SW@@END VARIABLE: waEffectiveSpread_Dollar_SW@@,
+    sum(wEffectiveSpread_Percent_DW) as @@BEGIN VARIABLE: waEffectiveSpread_Percent_DW@@waEffectiveSpread_Percent_DW@@END VARIABLE: waEffectiveSpread_Percent_DW@@,
+    sum(wEffectiveSpread_Percent_SW) as @@BEGIN VARIABLE: waEffectiveSpread_Percent_SW@@waEffectiveSpread_Percent_SW@@END VARIABLE: waEffectiveSpread_Percent_SW@@
+    from TSpread2 
+    group by symbol,date 
+    order by symbol,date;
+quit;
+
+/* Calculate Dollar-Weighted (DW) and Share-Weighted (SW) Dollar Effective 
+   Spreads and Percent Effective Spreads */
+data EffectiveSpreads;
+    set EffectiveSpreads;
+	@@BEGIN VARIABLE: EffectiveSpread_Dollar_DW@@
+    EffectiveSpread_Dollar_DW=waEffectiveSpread_Dollar_DW/sumdollar;
+	@@END VARIABLE: EffectiveSpread_Dollar_DW@@
+	@@BEGIN VARIABLE: EffectiveSpread_Dollar_SW@@
+    EffectiveSpread_Dollar_SW=waEffectiveSpread_Dollar_SW/sumsize;
+	@@END VARIABLE: EffectiveSpread_Dollar_SW@@
+	@@BEGIN VARIABLE: EffectiveSpread_Percent_DW@@
+    EffectiveSpread_Percent_DW=waEffectiveSpread_Percent_DW/sumdollar;
+	@@END VARIABLE: EffectiveSpread_Percent_DW@@
+	@@BEGIN VARIABLE: EffectiveSpread_Percent_SW@@
+    EffectiveSpread_Percent_SW=waEffectiveSpread_Percent_SW/sumsize;
+	@@END VARIABLE: EffectiveSpread_Percent_SW@@
+	drop waEffectiveSpread_Dollar_DW waEffectiveSpread_Dollar_SW
+         waEffectiveSpread_Percent_DW waEffectiveSpread_Percent_SW;
+run;
+
+/* STEP 10: CALCULATE REALIZED SPREADS AND PRICE IMPACTS BASED ON THREE:
+   CONVENTIONS: LR = LEE AND READY (1991), EMO = ELLIS, MICHAELY, AND O'HARA 
+   (2000) AND CLNV = CHAKRABARTY, LI, NGUYEN, AND VAN NESS (2006);  
+   FIND THE NBBO MIDPOINT 5 MINUTES SUBSEQUENT TO THE TRADE */
+
+/* Redefine the InterpolatedTime variable as 5 minutes earlier (e.g., quotes
+   at 10:00:00 are redefined as occurring at 9:55:00 in order to match to 
+   trades occurring at 9:55:00. This way we match trades occurring at time T 
+   to NBBO quotes outstanding at T+5). */
+data MidQ (keep=symbol date type midpointnew InterpolatedTime 
+     BestOfrnew BestBidnew);
+    set QSpread1;
+    midpointnew=midpoint;
+    InterpolatedTime=InterpolatedTime-300;
+    BestOfrnew=BestOfr;
+    BestBidnew=BestBid;
+run;
+
+data MidT (keep=symbol date tradetime InterpolatedTime type midpoint price
+     @@BEGIN VARIABLE: BuySellLR@@mtaq_BuySellLR@@END VARIABLE: BuySellLR@@ @@BEGIN VARIABLE: BuySellEMO@@mtaq_BuySellEMO@@END VARIABLE: BuySellEMO@@ @@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@ wEffectiveSpread_Dollar size dollar);
+    set BuySellIndicators;
+run;
+
+proc sort data=MidQ;
+    by symbol date InterpolatedTime type;
+run;
+
+proc sort data=MidT;
+    by symbol date InterpolatedTime type;
+run;
+
+/* Stack Trades at Time T with NBBO Quotes at Time T+5 */
+data Mid1;
+    set MidT MidQ;
+    by symbol date InterpolatedTime type;
+run;
+
+/* For Each Trade at Time T, Identify the Outstanding NBBO at Time T+5 */
+data Mid1;
+    set Mid1;
+    by symbol date;
+    retain  @@BEGIN VARIABLE: midpoint5@@midpoint5@@END VARIABLE: midpoint5@@ @@BEGIN VARIABLE: BestOfr5@@BestOfr5@@END VARIABLE: BestOfr5@@ @@BEGIN VARIABLE: BestBid5@@BestBid5@@END VARIABLE: BestBid5@@;
+    if type='Q' then  midpoint5=midpointnew;
+    else  midpoint5= midpoint5;
+    if type='Q' then  BestOfr5=BestOfrnew;else  BestOfr5= BestOfr5;
+    if type='Q' then  BestBid5=BestBidnew;else  BestBid5= BestBid5;
+	drop midpointnew BestOfrnew BestBidnew;
+run;
+
+/* Delete Trades at T Associated with Locked or Crossed Best Bids or Best 
+   Offers at T+5 */
+data Mid2 (drop=midpointnew BestOfrnew BestBidnew);
+    set Mid1;
+    if  BestOfr5= BestBid5 or  BestOfr5< BestBid5 then delete;
+run;
+
+/* Create Indicator Variable "D" equal to "1" if Trade is a Buy and "-1" if 
+   Trade is a Sell for LR, EMO, and CLNV */
+data Mid2; 
+    set Mid2; 
+    where type='T';
+
+    /* Compute Dollar and Percent Realized Spread for LR, EMO, and CLNV */
+	@@BEGIN VARIABLE: wDollarRealizedSpread_CLNV@@
+    wDollarRealizedSpread_CLNV=@@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@*( price- midpoint5)*2;
+	@@END VARIABLE: wDollarRealizedSpread_CLNV@@
+	@@BEGIN VARIABLE: wPercentRealizedSpread_CLNV@@
+    wPercentRealizedSpread_CLNV=@@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@*(log( price)-log( midpoint5))*2;
+	@@END VARIABLE: wPercentRealizedSpread_CLNV@@
+
+    /* Compute Dollar and Percent Price Impact for LR, EMO, and CLNV */
+	@@BEGIN VARIABLE: wDollarPriceImpact_CLNV@@
+    wDollarPriceImpact_CLNV=@@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@*( midpoint5- midpoint)*2;
+	@@END VARIABLE: wDollarPriceImpact_CLNV@@
+	@@BEGIN VARIABLE: wPercentPriceImpact_CLNV@@
+    wPercentPriceImpact_CLNV=@@BEGIN VARIABLE: BuySellCLNV@@mtaq_BuySellCLNV@@END VARIABLE: BuySellCLNV@@*(log( midpoint5)-log( midpoint))*2;
+	@@END VARIABLE: wPercentPriceImpact_CLNV@@
+
+    /* Multiply Realized Spreads and Price Impact by Dollar and Share Size
+	   of Trade for LR, EMO, and CLNV */
+	@@BEGIN VARIABLE: wDollarRealizedSpread_CLNV_SW@@
+    wDollarRealizedSpread_CLNV_SW=wDollarRealizedSpread_CLNV*size;
+	@@END VARIABLE: wDollarRealizedSpread_CLNV_SW@@
+	@@BEGIN VARIABLE: wDollarRealizedSpread_CLNV_DW@@
+    wDollarRealizedSpread_CLNV_DW=wDollarRealizedSpread_CLNV*dollar;
+	@@END VARIABLE: wDollarRealizedSpread_CLNV_DW@@
+	@@BEGIN VARIABLE: wPercentRealizedSpread_CLNV_SW@@
+    wPercentRealizedSpread_CLNV_SW=wPercentRealizedSpread_CLNV*size;
+	@@END VARIABLE: wPercentRealizedSpread_CLNV_SW@@
+	@@BEGIN VARIABLE: wPercentRealizedSpread_CLNV_DW@@
+    wPercentRealizedSpread_CLNV_DW=wPercentRealizedSpread_CLNV*dollar;
+	@@END VARIABLE: wPercentRealizedSpread_CLNV_DW@@
+	@@BEGIN VARIABLE: wDollarPriceImpact_CLNV_SW@@
+    wDollarPriceImpact_CLNV_SW=wDollarPriceImpact_CLNV*size;
+	@@END VARIABLE: wDollarPriceImpact_CLNV_SW@@
+	@@BEGIN VARIABLE: wDollarPriceImpact_CLNV_DW@@
+    wDollarPriceImpact_CLNV_DW=wDollarPriceImpact_CLNV*dollar;
+	@@END VARIABLE: wDollarPriceImpact_CLNV_DW@@
+	@@BEGIN VARIABLE: wPercentPriceImpact_CLNV_SW@@
+    wPercentPriceImpact_CLNV_SW=wPercentPriceImpact_CLNV*size;
+	@@END VARIABLE: wPercentPriceImpact_CLNV_SW@@
+	@@BEGIN VARIABLE: wPercentPriceImpact_CLNV_DW@@
+    wPercentPriceImpact_CLNV_DW=wPercentPriceImpact_CLNV*dollar;
+	@@END VARIABLE: wPercentPriceImpact_CLNV_DW@@
+run;
+
+/* Find average across firm-day */
+proc sql; 
+    create table RealizedSpreadsandPriceImpacts 
+    as select symbol,date,
+    sum(dollar) as sumdollar,
+    sum(size) as sumsize,
+    mean(wDollarRealizedSpread_CLNV) as @@BEGIN VARIABLE: DollarRealizedSpread_CLNV_Ave@@DollarRealizedSpread_CLNV_Ave@@END VARIABLE: DollarRealizedSpread_CLNV_Ave@@,
+    mean(wPercentRealizedSpread_CLNV) as @@BEGIN VARIABLE: PercentRealizedSpread_CLNV_Ave@@PercentRealizedSpread_CLNV_Ave@@END VARIABLE: PercentRealizedSpread_CLNV_Ave@@,
+    mean(wDollarPriceImpact_CLNV) as @@BEGIN VARIABLE: DollarPriceImpact_CLNV_Ave@@DollarPriceImpact_CLNV_Ave@@END VARIABLE: DollarPriceImpact_CLNV_Ave@@,
+    mean(wPercentPriceImpact_CLNV) as @@BEGIN VARIABLE: PercentPriceImpact_CLNV_Ave@@PercentPriceImpact_CLNV_Ave@@END VARIABLE: PercentPriceImpact_CLNV_Ave@@,
+	sum(wDollarRealizedSpread_CLNV_SW) as @@BEGIN VARIABLE: waDollarRealizedSpread_CLNV_SW@@waDollarRealizedSpread_CLNV_SW@@END VARIABLE: waDollarRealizedSpread_CLNV_SW@@,
+    sum(wDollarRealizedSpread_CLNV_DW) as @@BEGIN VARIABLE: waDollarRealizedSpread_CLNV_DW@@waDollarRealizedSpread_CLNV_DW@@END VARIABLE: waDollarRealizedSpread_CLNV_DW@@,
+    sum(wPercentRealizedSpread_CLNV_SW) as @@BEGIN VARIABLE: waPercentRealizedSpread_CLNV_SW@@waPercentRealizedSpread_CLNV_SW@@END VARIABLE: waPercentRealizedSpread_CLNV_SW@@,
+    sum(wPercentRealizedSpread_CLNV_DW) as @@BEGIN VARIABLE: waPercentRealizedSpread_CLNV_DW@@waPercentRealizedSpread_CLNV_DW@@END VARIABLE: waPercentRealizedSpread_CLNV_DW@@,
+    sum(wDollarPriceImpact_CLNV_SW) as @@BEGIN VARIABLE: waDollarPriceImpact_CLNV_SW@@waDollarPriceImpact_CLNV_SW@@END VARIABLE: waDollarPriceImpact_CLNV_SW@@,
+    sum(wDollarPriceImpact_CLNV_DW) as @@BEGIN VARIABLE: waDollarPriceImpact_CLNV_DW@@waDollarPriceImpact_CLNV_DW@@END VARIABLE: waDollarPriceImpact_CLNV_DW@@,
+    sum(wPercentPriceImpact_CLNV_SW) as @@BEGIN VARIABLE: waPercentPriceImpact_CLNV_SW@@waPercentPriceImpact_CLNV_SW@@END VARIABLE: waPercentPriceImpact_CLNV_SW@@,
+    sum(wPercentPriceImpact_CLNV_DW) as @@BEGIN VARIABLE: waPercentPriceImpact_CLNV_DW@@waPercentPriceImpact_CLNV_DW@@END VARIABLE: waPercentPriceImpact_CLNV_DW@@
+	from Mid2 
+    group by symbol,date 
+    order by symbol,date; 
+quit;
+
+/* Calculate Dollar-Weighted (DW) and Share-Weighted (SW) Realized Spreads 
+   and Price Impact */
+data RealizedSpreadsandPriceImpacts;
+    set RealizedSpreadsandPriceImpacts;
+    @@BEGIN VARIABLE: DollarRealizedSpread_CLNV_SW@@
+	DollarRealizedSpread_CLNV_SW=waDollarRealizedSpread_CLNV_SW/sumsize;
+	@@END VARIABLE: DollarRealizedSpread_CLNV_SW@@
+	@@BEGIN VARIABLE: DollarRealizedSpread_CLNV_DW@@
+    DollarRealizedSpread_CLNV_DW=waDollarRealizedSpread_CLNV_DW/sumdollar;
+	@@END VARIABLE: DollarRealizedSpread_CLNV_DW@@
+	@@BEGIN VARIABLE: PercentRealizedSpread_CLNV_SW@@
+    PercentRealizedSpread_CLNV_SW=waPercentRealizedSpread_CLNV_SW/sumsize;
+	@@END VARIABLE: PercentRealizedSpread_CLNV_SW@@
+	@@BEGIN VARIABLE: PercentRealizedSpread_CLNV_DW@@
+    PercentRealizedSpread_CLNV_DW=waPercentRealizedSpread_CLNV_DW/sumdollar;
+	@@END VARIABLE: PercentRealizedSpread_CLNV_DW@@
+	@@BEGIN VARIABLE: DollarPriceImpact_CLNV_SW@@
+    DollarPriceImpact_CLNV_SW=waDollarPriceImpact_CLNV_SW/sumsize;
+	@@END VARIABLE: DollarPriceImpact_CLNV_SW@@
+	@@BEGIN VARIABLE: DollarPriceImpact_CLNV_DW@@
+    DollarPriceImpact_CLNV_DW=waDollarPriceImpact_CLNV_DW/sumdollar;
+	@@END VARIABLE: DollarPriceImpact_CLNV_DW@@
+	@@BEGIN VARIABLE: PercentPriceImpact_CLNV_SW@@
+    PercentPriceImpact_CLNV_SW=waPercentPriceImpact_CLNV_SW/sumsize;
+	@@END VARIABLE: PercentPriceImpact_CLNV_SW@@
+	@@BEGIN VARIABLE: PercentPriceImpact_CLNV_DW@@
+    PercentPriceImpact_CLNV_DW=waPercentPriceImpact_CLNV_DW/sumdollar;
+	@@END VARIABLE: PercentPriceImpact_CLNV_DW@@
+	drop waDollarRealizedSpread_CLNV_SW waDollarRealizedSpread_CLNV_DW
+	     waPercentRealizedSpread_CLNV_SW waPercentRealizedSpread_CLNV_DW
+		 waDollarPriceImpact_CLNV_SW waDollarPriceImpact_CLNV_DW
+         waPercentPriceImpact_CLNV_SW waPercentPriceImpact_CLNV_DW;
+run;
+
+/* STEP 11: DOWNLOAD THE FILES YOU WANT TO YOUR PROJECT FOLDER 
+
+   By default, only the last three output files are downloaded to the 
+   "project" folder. You can download all eight of the files by 
+   removing the "comment outs" in the statements below */
+
+/*data project.MonthlyQuote;set MonthlyQuote;run;*/
+
+/*data project.MonthlyTrade;set MonthlyTrade;run;*/
+
+/*data project.CompleteNBBO;set CompleteNBBO;run; */
+
+/*data project.TradesandCorrespondingNBBO;
+  set TradesandCorrespondingNBBO;run;*/
+
+/*data project.BuySellIndicators;set BuySellIndicators;run; */
+
+data project.QuotedSpreadsandDepths;set QuotedSpreadsandDepths;run;
+
+data project.EffectiveSpreads;set EffectiveSpreads;run;
+
+data project.RealizedSpreadsandPriceImpacts;
+set RealizedSpreadsandPriceImpacts;run;

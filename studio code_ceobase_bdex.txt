@@ -1,0 +1,244 @@
+/*
+这段代码的主要功能是从 BoardEx 数据库、Compustat 数据库和 CRSP 数据库中提取和合并数据，
+构建一个包含 CEO 的基本信息（如任职起始和结束日期）、公司信息和教育背景的数据集 `ceobase_bdex`，
+并将其保存到指定的库中，用于后续研究高管特征。
+*/
+
+/*
+表格一：已知变量（直接引自数据库）
+| 变量名            | 含义                                             | 数据库                             |
+|-------------------|--------------------------------------------------|--------------------------------------|
+| @@VARIABLE: companyid@@companyid         | BoardEx 公司标识符                            | boardex.na_wrds_dir_profile_emp,  wrdsapps.bdxcrspcomplink           |
+| @@VARIABLE: directorid@@directorid          |  BoardEx 高管标识符                           | boardex.na_wrds_dir_profile_emp, boardex.na_dir_profile_education, boardex.na_dir_profile_details    |
+| @@VARIABLE: datestartrole@@datestartrole      |  高管任职开始日期                         | boardex.na_wrds_dir_profile_emp     |
+| @@VARIABLE: dateendrole@@dateendrole        | 高管任职结束日期                         | boardex.na_wrds_dir_profile_emp      |
+| @@VARIABLE: rolename@@rolename           | 高管职位名称                          | boardex.na_wrds_dir_profile_emp      |
+| @@VARIABLE: gvkey@@gvkey          | 公司标识符                                   | wrdsapps.bdxcrspcomplink   |
+| @@VARIABLE: Qualification@@Qualification      | 教育资格                                   |  boardex.na_dir_profile_education  |
+| @@VARIABLE: awarddate@@awarddate          | 授予学位日期                              | boardex.na_dir_profile_education   |
+| @@VARIABLE: dob@@dob          | 出生日期                                   | boardex.na_dir_profile_details       |
+| @@VARIABLE: gender@@gender          | 性别                                   | boardex.na_dir_profile_details       |
+
+表格二：计算得到的变量（由已知变量计算得来）
+| 变量名           | 含义                                         | 公式                                                                                             |
+|------------------|----------------------------------------------|----------------------------------------------------------------------------------------------------|
+| @@VARIABLE: ceo_bdt@@ceo_bdt        | CEO 任职开始日期                                    | `ceo_bdt = datestartrole`                                                       |
+| @@VARIABLE: ceo_edt@@ceo_edt        | CEO 任职结束日期                              |   根据 `dateendrole` 和 `today` 计算得出，如果 dateendrole 为缺失值，则使用 today，否则使用 dateendrole        |
+| @@VARIABLE: companyid_l1@@companyid_l1  | 上一个记录的公司标识符                                | `companyid_l1=lag(companyid)`                                                              |
+| @@VARIABLE: directorid_l1@@directorid_l1  | 上一个记录的高管标识符                                | `directorid_l1=lag(directorid)`                                                               |
+| @@VARIABLE: ceo_edt_l1@@ceo_edt_l1    | 上一个记录的 CEO 任职结束日期                           | `ceo_edt_l1=lag(ceo_edt)`                                                                |
+| @@VARIABLE: companyid_d1@@companyid_d1  | 再上一个记录的公司标识符                                | `companyid_d1=lag(companyid)`                                                               |
+| @@VARIABLE: directorid_d1@@directorid_d1   | 再上一个记录的高管标识符                                 | `directorid_d1=lag(directorid)`                                                               |
+| @@VARIABLE: ceo_bdt_d1@@ceo_bdt_d1    | 再上一个记录的 CEO 任职开始日期                           | `ceo_bdt_d1=lag(ceo_bdt)`                                                                |
+| @@VARIABLE: gap_bdt@@gap_bdt       | 与上一个记录的任职结束日期的时间间隔                          |   `ceo_bdt-ceo_edt_l1` (如果 companyid 和 directorid 都相同)                                                              |
+| @@VARIABLE: gap_edt@@gap_edt       | 与上上一个记录的任职开始日期的时间间隔                            |  `ceo_bdt_d1-ceo_edt` (如果 companyid 和 directorid 都相同)                                                             |
+| @@VARIABLE: mark_b@@mark_b        | 调整后的 CEO 任职开始日期               |  如果 `gap_bdt` 为缺失值或大于7， 则使用 `ceo_bdt`                                                                 |
+| @@VARIABLE: mark_e@@mark_e        | 调整后的 CEO 任职结束日期              |  如果 `gap_edt` 为缺失值或大于7， 则使用 `ceo_edt`                                                                |
+| @@VARIABLE: gvkey_cnt@@gvkey_cnt     | 公司对应的gvkey数量                                    |   count(gvkey) group by COMPANYID                                                             |
+| @@VARIABLE: dt_bceo@@dt_bceo        |  CEO的开始时间         |   mark_b                                                                   |
+| @@VARIABLE: dt_eceo@@dt_eceo        |  CEO的结束时间                                    |  min(mark_e), group by companyid,directorid, mark_b                                                                 |
+| @@VARIABLE: gradadate_a@@gradadate_a      |   高管的最高学历毕业日期                                    |   awarddate                                                                   |
+| @@VARIABLE: gradadate_b@@gradadate_b     |   高管的毕业日期（没有则用样本起始日期代替）                                    |   awarddate                                                                   |
+| @@VARIABLE: yr_dob_bdex@@yr_dob_bdex    |  高管的出生年份                                    | substr(dob,len_dob-3,4)*1        |
+
+时间范围：
+| 变量名     | 时间范围           |
+|------------|-------------------------|
+|  comp.fundq   | 2010-2020    |
+|   boardex.na_wrds_dir_profile_emp  |  2014-2021 |
+*/
+libname inputs "/home/uiowa/tptashni/vars/inputs";
+libname outputs "/home/uiowa/tptashni/vars/outputs";
+%let today=19NOV2021;
+%let begdate=01JAN2014;
+%let enddate=31DEC2021;
+data s1;
+set boardex.na_wrds_dir_profile_emp;
+where index(RoleName,"CEO")>0 and index(RoleName,"Division CEO")=0 and index(RoleName,"Regional CEO")=0
+and index(RoleName,"Deputy CEO")=0 and index(RoleName,"Division Co-CEO")=0 and index(RoleName,"Regional Co-CEO")=0
+and index(RoleName,"Deputy Co-CEO")=0 and index(RoleName,"CEO Emeritus")=0 and not missing(datestartrole);
+@@BEGIN VARIABLE: ceo_bdt@@ceo_bdt=datestartrole;@@END VARIABLE: ceo_bdt@@
+mark=put(dateendrole,mmddyy10.);
+if index(mark,"N")>0 then delete;
+if index(mark,"C")>0 then 
+@@BEGIN VARIABLE: ceo_edt@@ceo_edt="&today"d;@@END VARIABLE: ceo_edt@@
+if not missing(dateendrole) then 
+@@BEGIN VARIABLE: dateendrole@@ceo_edt=dateendrole;@@END VARIABLE: dateendrole@@
+format ceo_bdt ceo_edt mmddyy10.;
+keep 
+@@BEGIN VARIABLE: companyid@@companyid @@END VARIABLE: companyid@@
+@@BEGIN VARIABLE: directorid@@directorid @@END VARIABLE: directorid@@
+@@BEGIN VARIABLE: rolename@@rolename @@END VARIABLE: rolename@@
+ceo_bdt ceo_edt;
+run;
+proc sort data=s1 nodupkey;
+by companyid directorid ceo_bdt;
+run;
+data s1;
+set s1;
+@@BEGIN VARIABLE: companyid_l1@@companyid_l1=lag(companyid);@@END VARIABLE: companyid_l1@@
+@@BEGIN VARIABLE: directorid_l1@@directorid_l1=lag(directorid);@@END VARIABLE: directorid_l1@@
+@@BEGIN VARIABLE: ceo_edt_l1@@ceo_edt_l1=lag(ceo_edt);@@END VARIABLE: ceo_edt_l1@@
+format ceo_edt_l1 mmddyy10.;
+run;
+proc sort data=s1;
+by companyid directorid descending ceo_bdt;
+run;
+data s1;
+set s1;
+@@BEGIN VARIABLE: companyid_d1@@companyid_d1=lag(companyid);@@END VARIABLE: companyid_d1@@
+@@BEGIN VARIABLE: directorid_d1@@directorid_d1=lag(directorid);@@END VARIABLE: directorid_d1@@
+@@BEGIN VARIABLE: ceo_bdt_d1@@ceo_bdt_d1=lag(ceo_bdt);@@END VARIABLE: ceo_bdt_d1@@
+format ceo_bdt_d1 mmddyy10.;
+run;
+data s1;
+set s1;
+if companyid=companyid_l1 and directorid=directorid_l1 then 
+@@BEGIN VARIABLE: gap_bdt@@gap_bdt=ceo_bdt-ceo_edt_l1;@@END VARIABLE: gap_bdt@@
+if companyid=companyid_d1 and directorid=directorid_d1 then 
+@@BEGIN VARIABLE: gap_edt@@gap_edt=ceo_bdt_d1-ceo_edt;@@END VARIABLE: gap_edt@@
+run;
+data s2;
+set s1;
+if gap_bdt=. then 
+@@BEGIN VARIABLE: mark_b@@mark_b=ceo_bdt;@@END VARIABLE: mark_b@@
+if gap_bdt>7 then mark_b=ceo_bdt;
+if gap_edt=. then 
+@@BEGIN VARIABLE: mark_e@@mark_e=ceo_edt;@@END VARIABLE: mark_e@@
+if gap_edt>7 then mark_e=ceo_edt;
+format mark_b mmddyy10.;
+format mark_e mmddyy10.;
+keep directorid companyid ceo_bdt ceo_edt mark_b mark_e;
+run;
+data s3;
+set s2;
+if missing(mark_b) then delete;
+keep directorid companyid mark_b ;
+run;
+data s5;
+set s2;
+if  missing(mark_e) then delete;
+keep directorid companyid  mark_e;
+run;
+proc sql;
+create table s6 as select unique a.*, b.mark_e
+from s3 as a left join s5 as b
+on a.companyid=b.companyid and a.directorid=b.directorid and a.mark_b<b.mark_e;
+quit;
+proc sql;
+create table s7 as select companyid,directorid, mark_b as dt_bceo, min(mark_e) as dt_eceo
+from s6 
+group by companyid,directorid, mark_b;
+quit;
+data emp_clean;
+set s7;
+format 
+@@BEGIN VARIABLE: dt_eceo@@dt_eceo mmddyy10.;@@END VARIABLE: dt_eceo@@
+if dt_eceo<"&begdate"d then delete;
+if 
+@@BEGIN VARIABLE: dt_bceo@@dt_bceo>"&enddate"d@@END VARIABLE: dt_bceo@@ then delete;
+run;
+proc sql;
+drop table s1, s2, s3, s5, s6, s7;
+quit;
+data s1;
+set wrdsapps.bdxcrspcomplink;
+keep COMPANYID gvkey;
+run;
+proc sort data=s1 nodupkey;
+by  COMPANYID gvkey;
+run;
+proc sql;
+create table s2 as select  COMPANYID, count(gvkey) as 
+@@BEGIN VARIABLE: gvkey_cnt@@gvkey_cnt
+@@END VARIABLE: gvkey_cnt@@
+from s1 
+group by  COMPANYID;
+quit;
+proc sql;
+create table s1 as select a.*, b.gvkey_cnt
+from s1 as a left join s2 as b
+on a.COMPANYID=b.COMPANYID;
+quit;
+data s1;
+set s1;
+if gvkey_cnt=1;
+run;
+data link_clean;
+set s1;
+drop gvkey_cnt;
+run;
+proc sql;
+create table emp_clean as select a.*, b.gvkey
+from emp_clean as a left join link_clean as b
+on a.COMPANYID=b.COMPANYID;
+quit;
+data emp_clean;
+set emp_clean;
+if missing(gvkey) then delete;
+run;
+proc sql;
+drop table s1, s2;
+quit;
+proc sql;
+create table s1 as select a.*, b.postgrad
+from boardex.na_dir_profile_education as a left join inputs.postgradlist as b
+on a.Qualification=b.Qualification;
+quit;
+data s1;
+set s1;
+if missing(postgrad) then delete;
+run;
+data postgrad_a;
+set s1;
+if missing(awarddate) then delete;
+@@BEGIN VARIABLE: gradadate_a@@gradadate_a=awarddate;@@END VARIABLE: gradadate_a@@
+format gradadate_a mmddyy10.;
+keep directorid gradadate_a;
+run;
+proc sort data=postgrad_a;
+by directorid gradadate_a;
+run;
+proc sort data=postgrad_a nodupkey;
+by directorid;
+run;
+data postgrad_b;
+set s1;
+if missing(awarddate) then awarddate="&begdate."d;
+@@BEGIN VARIABLE: gradadate_b@@gradadate_b=awarddate;@@END VARIABLE: gradadate_b@@
+format gradadate_b mmddyy10.;
+keep directorid gradadate_b;
+run;
+proc sort data=postgrad_b;
+by directorid gradadate_b;
+run;
+proc sort data=postgrad_b nodupkey;
+by directorid;
+run;
+proc sql;
+drop table s1;
+quit;
+proc sql;
+create table s1 as select a.*, b.gradadate_a
+from emp_clean as a left join postgrad_a as b
+on a.directorid=b.directorid;
+quit;
+proc sql;
+create table s1 as select a.*, b.gradadate_b
+from s1 as a left join postgrad_b as b
+on a.directorid=b.directorid;
+quit;
+proc sql;
+create table s1 as select a.*, b.dob, b.gender
+from s1 as a left join boardex.na_dir_profile_details as b
+on a.directorid=b.directorid;
+quit;
+data s1;
+set s1;
+len_dob=length(dob);
+@@BEGIN VARIABLE: yr_dob_bdex@@yr_dob_bdex=substr(dob,len_dob-3,4)*1;@@END VARIABLE: yr_dob_bdex@@
+drop len_dob;
+run;
+data outputs.ceobase_bdex;
+set s1;
+run;

@@ -1,0 +1,137 @@
+/*
+这段代码的主要功能是从Compustat和IBES数据库中提取数据，计算每个公司在每个财务年度内发布一到两个季度前盈利预测的分析师数量，
+并将结果保存到指定的库中，用于后续分析。
+*/
+
+/*
+表格一：已知变量（直接引自数据库）
+| 变量名      | 含义                                   | 数据库                                                |
+|-------------|----------------------------------------|-------------------------------------------------------|
+| @@VARIABLE: gvkey@@gvkey          | 公司标识符                               | comp.funda, cibeslnk                                  |
+| @@VARIABLE: fyear@@fyear         | 财务年度                             | comp.funda                                            |
+| @@VARIABLE: datadate@@datadate      | 数据日期                                 | comp.funda                                            |
+| @@VARIABLE: ticker@@ticker           | IBES 股票代码                          | cibeslnk                                              |
+| @@VARIABLE: analys@@analys           | 分析师标识符                          | ibes.detu_epsus                                       |
+| @@VARIABLE: fpedats@@fpedats          | 预测结束日期                              | ibes.detu_epsus                                       |
+| @@VARIABLE: anndats@@anndats          | 公告日期                              | ibes.detu_epsus                                       |
+
+表格二：计算得到的变量（由已知变量计算得来）
+| 变量名     | 含义                    | 公式                        |
+|------------|-------------------------|-----------------------------|
+| @@VARIABLE: afcnt@@afcnt    | 分析师预测数量        | afcnt = count(analys)                    |
+
+时间范围：
+| 变量名     | 时间范围           |
+|------------|-------------------------|
+| datadate   | 01JAN1991 - 31DEC2020  |
+| fpedats    | 01JAN1991 - 31DEC2020  |
+*/
+
+libname output "/home/yale/yiliwu/trial/outputs";
+
+/*********************part one: set the common varibales************************************/
+%let begindate='01jan1991'd; 					*start calendar date of fiscal period end;
+%let enddate='31dec2020'd; 					*end calendar date of fiscal period end;
+
+* variables to extract from Compustat;
+%let comp_list= gvkey fyear datadate;
+
+* timing and primary filters for Compustat Xpressfeed;
+%let comp_where=where=(fyear>0 and  at>0 and consol='C' and popsrc='D' and indfmt='INDL' and datafmt='STD' and missing(datadate)=0);
+
+* IBES filters;
+%let ibes_where1=where=(measure='EPS' and fpi in ('6','7') and &begindate<=fpedats<=&enddate);
+* filter from LM (2006):
+- earnings announcement date is reported in Compustat
+- the price per share is available from Compustat as of the end of the fiscal quarter and is greater than $1
+- the market (book) value of equity at the fiscal quarter end is available and is larger than $5 mil;
+*%let LM_filter=(missing(rdq)=0 and prccq>1 and mcap>5.0);
+%let LM_filter=(missing(rdq)=0 and prccq>0 and mcap>0);
+
+* define a set of auxiliary macros;
+%include '/wrds/ibes/samples/cibeslink.sas';
+%include '/wrds/ibes/samples/ibes_sample.sas';
+%include '/wrds/comp/samples/sue.sas';
+%include '/wrds/ibes/samples/iclink.sas'; 			*build CRSP-IBES permno-ticker link;
+
+*********************************************************************************;
+* Get a list of IBES tickers you're interested in.				*;
+* Convert that list of IBES tickers into a text file called 'tickers.txt'	*;
+*********************************************************************************;
+options sasautos=('/wrds/wrdsmacros/', SASAUTOS) MAUTOSOURCE;
+%ICLINK (IBESID=IBES.ID,CRSPID=CRSP.STOCKNAMES,OUTSET=ICLINK);
+
+data tickers; set ICLINK;
+	keep ticker;
+run;
+
+proc sort data=tickers nodupkey;
+by ticker;
+run;
+
+* CIBESLINK macro will create a linking table CIBESLNK between IBES ticker and Compustat GVKEY
+* based on IBES ticker-CRSP permno (ICLINK) and CCM CRSP permno - Compustat GVKEY (CSTLINK2) link;
+%CIBESLINK (begdt=&begindate, enddt=&enddate);
+
+/****************part two:generate the compustat variables ***********************/
+data comp1;
+set comp.funda;
+data comp;
+@@BEGIN VARIABLE: gvkey@@
+@@BEGIN VARIABLE: fyear@@
+@@BEGIN VARIABLE: datadate@@
+ set comp.funda;
+  where "&begindate"d<=datadate<="&enddate"d 
+  and indfmt='INDL' and datafmt='STD' and popsrc='D' and consol='C';
+if missing(gvkey) then delete;
+if missing(fyear) then delete;
+if missing(at) then delete;
+if at<=0 then delete;
+/****key notes:
+1)one firm-year may have two revenue observations, one is sale and the other is sale plus operating sale other
+2) minor firm-year(<1%) have revenue without sales
+3) If sale has observations, then revenue has observation
+***/
+keep gvkey fyear datadate;
+run;
+@@END VARIABLE: gvkey@@
+@@END VARIABLE: fyear@@
+@@END VARIABLE: datadate@@
+
+proc sort data=comp nodupkey;
+by gvkey datadate;
+run;
+
+proc sort data=comp nodupkey;
+by gvkey fyear;
+run;
+
+proc sql;
+create table comp as select a.*, b.datadate as datadate_l1
+from comp as a left join comp as b
+on a.gvkey=b.gvkey and a.fyear=b.fyear+1;
+quit;
+
+proc sql;
+create table comp
+   as select a.*, b.ticker
+   from comp as a left join cibeslnk as b
+   on a.gvkey=b.gvkey and ((b.fdate<=a.datadate <=b.ldate) or
+   (b.fdate<=a.datadate and b.ldate=.E) or (b.fdate=.B and a.datadate <=b.ldate));
+quit;
+
+proc sql;
+create table comp as select a.*, b.analys
+from comp as a left join ibes.detu_epsus (where=(measure='EPS' and fpi in ('6','7') and &begindate<=fpedats<=&enddate)) as b
+on a.ticker=b.ticker and a.datadate>=b.anndats and a.datadate_l1<b.anndats;
+quit;
+
+proc sort data=comp nodupkey;
+by gvkey datadate analys;
+run;
+
+proc sql;
+create table output.yafcnt as select gvkey, datadate, count(analys) as afcnt
+from comp
+group by gvkey,datadate;
+quit;

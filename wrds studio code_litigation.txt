@@ -1,0 +1,332 @@
+/* 这段代码从多个数据集中提取、处理和合并财务与市场数据，生成一个包含公司标识、财务指标、市场表现和诉讼相关变量的数据集 litigation_var，并将其保存到指定库中，用于后续分析。 */
+
+libname vars '/home/manchester/jesscarroll/vars';
+
+/* 定义时间范围 */
+%let uni_begdt = 01JAN2000;
+%let uni_enddt = 31DEC2020;
+
+/*****
+%let uni_begdt = 01JAN1996;
+%let uni_enddt = 31DEC2008;
+
+Kim and Skinner(2012) use the sample period:1996-2008
+*%let uni_begdt = 01JAN1996;
+*%let uni_enddt = 31DEC2008;
+******/
+
+/* 用到的变量及其数据库来源 */
+/* | 变量名            | 解释                                      | 数据库来源          | */
+/* |-------------------|-------------------------------------------|---------------------| */
+/* | @@VARIABLE: gvkey@@gvkey             | 公司标识符                                | comp.funda          | */
+/* | @@VARIABLE: datadate@@datadate          | 数据日期                                  | comp.funda          | */
+/* | @@VARIABLE: fyear@@fyear              | 财务年度                                  | comp.funda          | */
+/* | @@VARIABLE: at@@at                   | 总资产                                    | comp.funda          | */
+/* | @@VARIABLE: sale@@sale               | 销售额                                    | comp.funda          | */
+/* | @@VARIABLE: PRCC_C@@PRCC_C           | 公司股票的收盘价                          | comp.funda          | */
+/* | @@VARIABLE: PRCC_F@@PRCC_F           | 公司股票的最终价格                        | comp.funda          | */
+/* | @@VARIABLE: permno@@permno            | CRSP 证券标识符                           | crsp.ccmxpf_lnkhist | */
+/* | @@VARIABLE: exchcd@@exchcd            | 交易所代码                                | crsp.stocknames     | */
+/* | @@VARIABLE: sich@@sich               | 标准行业分类代码                          | COMP.CO_INDUSTRY    | */
+/* | @@VARIABLE: ret@@ret                 | 月度股票收益率                            | crsp.msf            | */
+/* | @@VARIABLE: vol@@vol                 | 交易量                                    | crsp.msf            | */
+/* | @@VARIABLE: vwretd@@vwretd           | 市值加权市场收益率                        | crsp.msi            | */
+
+/* 计算出的变量及其含义 */
+/* | 变量名           | 变量解释                                      | 变量计算公式                          | */
+/* |------------------|-----------------------------------------------|---------------------------------------| */
+/* | @@VARIABLE: lnasset@@lnasset         | 总资产的自然对数                          | lnasset = log(at)                     | */
+/* | @@VARIABLE: salesgrowth@@salesgrowth | 销售增长率                                | salesgrowth = (sale - sale_l1) / at_l1| */
+/* | @@VARIABLE: lg_ret@@lg_ret           | 股票收益率的对数                          | lg_ret = log(1 + ret)                 | */
+/* | @@VARIABLE: lg_mkt_ret@@lg_mkt_ret   | 市场收益率的对数                          | lg_mkt_ret = log(1 + mkt_ret)         | */
+/* | @@VARIABLE: turnover@@turnover       | 换手率                                    | turnover = (sum_vol * 100) / (shrout_l1 * 1000) | */
+/* | @@VARIABLE: ret_adj@@ret_adj         | 调整后的收益率                            | ret_adj = exp(sum_lg_ret) - exp(sum_lg_mkt_ret) | */
+/* | @@VARIABLE: std_ret@@std_ret         | 收益率的标准差                            | std_ret = std(ret)                    | */
+
+@@BEGIN VARIABLE: gvkey@@
+@@BEGIN VARIABLE: datadate@@
+@@BEGIN VARIABLE: fyear@@
+@@BEGIN VARIABLE: at@@
+@@BEGIN VARIABLE: sale@@
+@@BEGIN VARIABLE: PRCC_C@@
+@@BEGIN VARIABLE: PRCC_F@@
+
+/* 提取财务数据 */
+data compa1;
+ set comp.funda;
+  where "&uni_begdt"d<=datadate<="&uni_enddt"d 
+  and indfmt='INDL' and datafmt='STD' and popsrc='D' and consol='C';
+   if at   <=0 then at   =.;
+   if sale <=0 then sale =.;
+   keep gvkey datadate fyear at sale PRCC_C PRCC_F;
+run;
+
+proc sort data=compa1; by gvkey datadate; run;
+
+@@END VARIABLE: gvkey@@
+@@END VARIABLE: datadate@@
+@@END VARIABLE: fyear@@
+@@END VARIABLE: at@@
+@@END VARIABLE: sale@@
+@@END VARIABLE: PRCC_C@@
+@@END VARIABLE: PRCC_F@@
+
+@@BEGIN VARIABLE: sale_l1@@
+@@BEGIN VARIABLE: at_l1@@
+@@BEGIN VARIABLE: PRCC_C_l1@@
+@@BEGIN VARIABLE: PRCC_F_l1@@
+
+/* 计算滞后变量 */
+proc sql;
+create table compa1 as select a.*, b.sale as sale_l1, b.at as at_l1, b.prcc_c as prcc_c_l1, b.prcc_f as prcc_f_l1
+from compa1 as a left join compa1 as b
+on a.gvkey=b.gvkey and a.fyear=b.fyear+1;
+quit;
+
+proc sort data=compa1; by gvkey datadate; run;
+
+@@END VARIABLE: sale_l1@@
+@@END VARIABLE: at_l1@@
+@@END VARIABLE: PRCC_C_l1@@
+@@END VARIABLE: PRCC_F_l1@@
+
+@@BEGIN VARIABLE: lnasset@@
+@@BEGIN VARIABLE: salesgrowth@@
+
+/* 计算新变量 */
+data compa1;
+set compa1;
+lnasset=log(at);
+salesgrowth=(sale-sale_l1)/at_l1;
+keep gvkey datadate fyear at sale PRCC_C PRCC_F  at_l1 sale_l1 PRCC_C_l1 PRCC_F_l1 lnasset salesgrowth;
+run;
+
+@@END VARIABLE: lnasset@@
+@@END VARIABLE: salesgrowth@@
+
+/* proc univariate: output the summary statistics of variables*/
+proc univariate data=compa1;
+var lnasset salesgrowth ;
+run;
+
+@@BEGIN VARIABLE: permno@@
+
+proc sql;
+  create table compa1
+  as select a.*, b.lpermno as permno
+  from compa1 as a, crsp.ccmxpf_lnkhist as b
+  where a.gvkey=b.gvkey and b.linkprim in ('P', 'C') and
+  b.LINKTYPE in ('LU', 'LC') and
+ (b.LINKDT <= a.datadate or missing(b.LINKDT)) and (a.datadate <= b.LINKENDDT or missing(b.LINKENDDT))
+  order by gvkey, datadate;
+quit;
+
+@@END VARIABLE: permno@@
+
+@@BEGIN VARIABLE: exchcd@@
+
+proc sql;
+create table compa1 as select a.*, b.exchcd
+from compa1 as a left join crsp.stocknames as b
+on a.permno=b.permno and a.datadate<=b.nameenddt and a.datadate>=b.namedt;
+quit;
+
+@@END VARIABLE: exchcd@@
+
+@@BEGIN VARIABLE: sich@@
+
+proc sql;
+create table compa1 as select a.*, b.sich
+from compa1 as a left join COMP.CO_INDUSTRY as b
+on a.gvkey=b.gvkey and a.datadate=b.datadate;
+quit;
+
+@@END VARIABLE: sich@@
+
+@@BEGIN VARIABLE: FPS@@
+
+data compa1;
+set compa1;
+sich_id=sich*1;
+if 2833<=sich_id<=2836 then FPS=1;
+if 8731<=sich_id<=8734 then FPS=1;
+if 3570<=sich_id<=3577 then FPS=1;
+if 7370<=sich_id<=7374 then FPS=1;
+if 3600<=sich_id<=3674 then FPS=1;
+if 5200<=sich_id<=5961 then FPS=1;
+run;
+
+@@END VARIABLE: FPS@@
+
+@@BEGIN VARIABLE: ret@@
+@@BEGIN VARIABLE: vol@@
+
+proc sql;
+create table compcrsp as select a.*, b.date, b.ret label='', b.vol
+from compa1 as a, crsp.msf as b
+where a.permno = b.permno and
+        intck('month', b.date, a.datadate) between 0 and 11
+order by gvkey, datadate, date;
+quit;
+
+@@END VARIABLE: ret@@
+@@END VARIABLE: vol@@
+
+@@BEGIN VARIABLE: mkt_ret@@
+
+proc sql;
+create table compcrsp as select a.*,  b.date as date_mkt, b.vwretd as mkt_ret
+from compcrsp as a, crsp.msi as b
+where a.date=b.date;
+quit;
+
+@@END VARIABLE: mkt_ret@@
+
+@@BEGIN VARIABLE: lg_ret@@
+@@BEGIN VARIABLE: lg_mkt_ret@@
+
+data compcrsp;
+set compcrsp;
+if missing(permno) then delete;
+if missing(gvkey) then delete;
+if missing(datadate) then delete;
+if missing(date) then delete;
+lg_ret=log(1+ret);
+lg_mkt_ret=log(1+mkt_ret);
+run;
+
+@@END VARIABLE: lg_ret@@
+@@END VARIABLE: lg_mkt_ret@@
+
+proc sort data=compcrsp nodupkey;
+by permno datadate date;
+run;
+
+@@BEGIN VARIABLE: std_ret@@
+@@BEGIN VARIABLE: sum_lg_ret@@
+@@BEGIN VARIABLE: sum_lg_mkt_ret@@
+@@BEGIN VARIABLE: sum_vol@@
+
+proc sql;
+create table compcrsp2 as select unique permno, gvkey, datadate, fyear, lnasset, salesgrowth, FPS
+                                  , std(ret) as std_ret
+                                  , sum(lg_ret) as sum_lg_ret
+                                  , sum(lg_mkt_ret) as sum_lg_mkt_ret
+                                  , sum(vol) as sum_vol
+                                  from compcrsp
+                                  group by permno, datadate;
+                                  quit;
+
+@@END VARIABLE: std_ret@@
+@@END VARIABLE: sum_lg_ret@@
+@@END VARIABLE: sum_lg_mkt_ret@@
+@@END VARIABLE: sum_vol@@
+
+@@BEGIN VARIABLE: shrout_l1@@
+
+proc sql;
+create table compcrsp2 as select a.*, b.shrout as shrout_l1
+from compcrsp2 as a, crsp.msf as b
+where a.permno = b.permno and
+        intck('month', b.date, a.datadate) =12
+order by permno, datadate ;
+quit; 
+
+@@END VARIABLE: shrout_l1@@
+
+@@BEGIN VARIABLE: turnover@@
+@@BEGIN VARIABLE: ret_adj@@
+
+data compcrsp2;
+set compcrsp2;
+turn=(sum_vol*100)/(shrout_l1*1000);/**vol is recorded in 100. shrout is recorded in 1000**/
+if exchcd^=3 then turnover=turn;
+/**Nasdaq stock exchcd=3, it turnover should be adjusted.
+*Adjust volume for NASDAQ stocks following Anderson and Dyl (2005) ***/
+if exchcd=3 then
+  turn=(datadate <='01jan1997'd)*0.5*turn+(datadate>'01jan1997'd)*0.62*turn;
+ret_adj=exp(sum_lg_ret)-exp(sum_lg_mkt_ret);
+keep permno gvkey turnover ret_adj std_ret datadate fyear lnasset salesgrowth FPS exchcd;
+run;
+
+@@END VARIABLE: turnover@@
+@@END VARIABLE: ret_adj@@
+
+@@BEGIN VARIABLE: ret_skewness@@
+
+proc means data=compcrsp  noprint;
+by permno datadate;
+var ret;
+output out=ret_skewness Skewness=ret_skewness;
+run;
+
+@@END VARIABLE: ret_skewness@@
+
+@@BEGIN VARIABLE: fps@@
+@@BEGIN VARIABLE: lnasset_l1@@
+@@BEGIN VARIABLE: salesgrowth_l1@@
+@@BEGIN VARIABLE: ret_adj_l1@@
+@@BEGIN VARIABLE: std_ret_l1@@
+@@BEGIN VARIABLE: turnover_l1@@
+@@BEGIN VARIABLE: ret_skewness_l1@@
+
+data litigation;
+set compa1;
+keep gvkey datadate fyear fps exchcd at sale PRCC_C PRCC_F at_l1 sale_l1 PRCC_C_l1 PRCC_F_l1;
+run;
+
+data litigation;
+set litigation;
+if missing(fps) then fps=0;
+run;
+
+proc sql;
+create table litigation as select unique a.*, b.datadate as datadate_l1
+from litigation as a left join compa1 as b
+on a.gvkey=b.gvkey and a.fyear=b.fyear+1;
+quit;
+
+proc sql;
+create table litigation as select unique a.*, b.permno
+from litigation as a left join compcrsp2 as b
+on a.gvkey=b.gvkey and a.fyear=b.fyear;
+quit;
+
+data litigation;
+set litigation;
+if missing(datadate_l1) then delete;
+if missing(permno) then delete;
+run;
+
+proc sql;
+create table litigation as select unique a.*, b.lnasset as lnasset_l1, b.salesgrowth as salesgrowth_l1
+from litigation as a left join compa1 as b
+on a.gvkey=b.gvkey and a.fyear=b.fyear+1;
+quit;
+
+proc sql;
+create table litigation as select a.*, b.ret_adj as ret_adj_l1, b.std_ret as std_ret_l1, b.turnover as turnover_l1
+from litigation as a left join compcrsp2 as b
+on a.permno=b.permno and a.fyear=b.fyear+1;
+quit;
+
+proc sql;
+create table litigation as select a.*, b.ret_skewness as ret_skewness_l1
+from litigation as a left join ret_skewness as b
+on a.permno=b.permno and a.datadate_l1=b.datadate;
+quit;
+
+@@END VARIABLE: fps@@
+@@END VARIABLE: lnasset_l1@@
+@@END VARIABLE: salesgrowth_l1@@
+@@END VARIABLE: ret_adj_l1@@
+@@END VARIABLE: std_ret_l1@@
+@@END VARIABLE: turnover_l1@@
+@@END VARIABLE: ret_skewness_l1@@
+
+proc means data=litigation n mean std min median max;
+var fps lnasset_l1 salesgrowth_l1 ret_adj_l1 ret_skewness_l1 std_ret_l1 turnover_l1;
+run;
+
+data vars.litigation_var;set litigation;
+run;

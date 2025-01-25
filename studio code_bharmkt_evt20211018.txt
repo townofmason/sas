@@ -1,0 +1,167 @@
+/* 这段代码的主要功能是从CRSP数据库中提取每日股票数据，计算累积超额收益（BHAR），并生成与事件研究相关的变量。代码分为四个部分：
+   1. 设置CRSP每日数据的时间范围并提取相关变量；
+   2. 计算累积收益（CRET）和市场调整后的累积收益；
+   3. 根据事件日期生成事件窗口内的BHAR；
+   4. 调用宏函数计算特定事件的BHAR。
+*/
+
+/* 变量综述 */
+/* 表格一：已知变量（直接引自数据库的变量） */
+/* | 变量名            | 含义                                      | 数据库来源          | */
+/* |-------------------|-------------------------------------------|---------------------| */
+/* | @@VARIABLE: permno@@permno            | CRSP 证券标识符                           | crsp.dse            | */
+/* | @@VARIABLE: prc@@prc                  | 股票价格                                  | crsp.dse            | */
+/* | @@VARIABLE: exchcd@@exchcd            | 交易所代码                                | crsp.dse            | */
+/* | @@VARIABLE: shrcd@@shrcd              | 股票类型代码                              | crsp.dse            | */
+/* | @@VARIABLE: vwretd@@vwretd            | 市值加权市场收益率                        | crsp.dsi            | */
+/* | @@VARIABLE: ewretd@@ewretd            | 等权重市场收益率                          | crsp.dsi            | */
+/* | @@VARIABLE: sprtrn@@sprtrn            | S&P 500 收益率                            | crsp.dsi            | */
+
+/* 表格二：计算得到的变量 */
+/* | 变量名            | 含义                                      | 公式                                                                 | */
+/* |-------------------|-------------------------------------------|----------------------------------------------------------------------| */
+/* | @@VARIABLE: cret@@cret                | 累积收益率                                | \( \text{cret} = \prod_{i=1}^{n} (1 + \text{ret}_i) - 1 \)            | */
+/* | @@VARIABLE: cret_emkt@@cret_emkt      | 等权重市场累积收益率                      | \( \text{cret\_emkt} = \prod_{i=1}^{n} (1 + \text{ewretd}_i) - 1 \)   | */
+/* | @@VARIABLE: cret_vmkt@@cret_vmkt      | 市值加权市场累积收益率                    | \( \text{cret\_vmkt} = \prod_{i=1}^{n} (1 + \text{vwretd}_i) - 1 \)   | */
+/* | @@VARIABLE: cret_msp5@@cret_msp5      | S&P 500 累积收益率                        | \( \text{cret\_msp5} = \prod_{i=1}^{n} (1 + \text{sprtrn}_i) - 1 \)   | */
+/* | @@VARIABLE: bhar_emkt@@bhar_emkt      | 等权重市场调整后的累积超额收益            | \( \text{bhar\_emkt} = \frac{\text{cret\_end} + 1}{\text{cret\_bgn\_l1} + 1} - \frac{\text{cret\_emkt\_end} + 1}{\text{cret\_emkt\_bgn\_l1} + 1} \) | */
+/* | @@VARIABLE: bhar_vmkt@@bhar_vmkt      | 市值加权市场调整后的累积超额收益          | \( \text{bhar\_vmkt} = \frac{\text{cret\_end} + 1}{\text{cret\_bgn\_l1} + 1} - \frac{\text{cret\_vmkt\_end} + 1}{\text{cret\_vmkt\_bgn\_l1} + 1} \) | */
+/* | @@VARIABLE: bhar_msp5@@bhar_msp5      | S&P 500 调整后的累积超额收益              | \( \text{bhar\_msp5} = \frac{\text{cret\_end} + 1}{\text{cret\_bgn\_l1} + 1} - \frac{\text{cret\_msp5\_end} + 1}{\text{cret\_msp5\_bgn\_l1} + 1} \) | */
+
+/* 表格三：时间范围 */
+/* | 变量名            | 时间范围                                  | */
+/* |-------------------|-------------------------------------------| */
+/* | @@VARIABLE: bgndate@@bgndate          | 01JAN2010 - 31DEC2020                    | */
+/* | @@VARIABLE: enddate@@enddate          | 01JAN2010 - 31DEC2020                    | */
+
+libname input "/home/uiowa/tptashni/vars/inputs"; 
+libname output "/home/uiowa/tptashni/vars/outputs";
+
+/*********Part One: set the crsp daily daily************/
+%let bgndate = 01JAN2010; /* 选择事件研究所需数据的开始日期 */
+%let enddate = 31DEC2020; /* 选择事件研究所需数据的结束日期 */
+
+/* 创建CRSP子样本，包含月度股票和事件变量 */
+/* 限制股票类型（仅普通股） */
+/*%let sfilter = (shrcd in (10,11,12));*/
+%let sfilter = 1=1;
+
+/* 从CRSP月度数据文件（crsp.dse文件）中选择的变量 */
+%let msfvars_d = permno prc ret ;
+@@BEGIN VARIABLE: exchcd@@
+<!-- BEGIN VARIABLE: shrcd-->
+
+%let msevars_d =  exchcd shrcd  ;
+@@END VARIABLE: exchcd@@
+<!-- END VARIABLE: shrcd-->
+
+
+%crspmerge(s=d,start=&bgndate,end=&enddate,sfvars=&msfvars_d,sevars=&msevars_d,filters=&sfilter);
+
+/************Part Two: generate crsp_out which is cumulative bhar *********************************/
+@@BEGIN VARIABLE: vwretd@@
+@@BEGIN VARIABLE: ewretd@@
+@@BEGIN VARIABLE: sprtrn@@
+proc sql;
+create table crsp_d1 as select a.*, b.vwretd as ret_vmkt, b.ewretd as ret_emkt, b.sprtrn as ret_msp5
+from crsp_d (keep=permno date ret) as a left join crsp.dsi as b
+on a.date=b.date;
+quit;
+@@END VARIABLE: vwretd@@
+@@END VARIABLE: ewretd@@
+@@END VARIABLE: sprtrn@@
+
+@@BEGIN VARIABLE: permno@@
+proc sort data=crsp_d1 nodupkey;
+by permno date;
+run;
+@@END VARIABLE: permno@@
+
+@@BEGIN VARIABLE: cret@@
+@@BEGIN VARIABLE: cret_emkt@@
+@@BEGIN VARIABLE: cret_vmkt@@
+@@BEGIN VARIABLE: cret_msp5@@
+proc expand data=crsp_d1 out=crsp_output method=none;
+  by permno; id date;
+  convert ret=cret/transformout=(+1 cuprod -1);
+  convert ret_emkt=cret_emkt/transformout=(+1 cuprod -1);
+  convert ret_vmkt=cret_vmkt/transformout=(+1 cuprod -1);
+  convert ret_msp5=cret_msp5/transformout=(+1 cuprod -1);
+run;
+@@END VARIABLE: cret@@
+@@END VARIABLE: cret_emkt@@
+@@END VARIABLE: cret_vmkt@@
+@@END VARIABLE: cret_msp5@@
+
+/************Part Three: extract the data related to event data from crsp_out and generate bhar *********************************/
+%macro bharmkt_event(origin= , vbhar= ,bgn_evt= ,end_evt= , evt_in= , date_evt= ,evt_out=);
+data caldates;
+merge crsp.dsi(keep=date rename=(date=origin))
+      crsp.dsi(keep=date firstobs=%eval(&origin.-1) rename=(date=evtdate_l1))
+	  crsp.dsi(keep=date firstobs=%eval(&origin.) rename=(date=evtdate))
+	  crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn_evt.-1) rename=(date=dt_bgn_bhar_l1))
+      crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn_evt.) rename=(date=dt_bgn_bhar))
+      crsp.dsi(keep=date firstobs=%eval(&origin.+&end_evt.) rename=(date=dt_end_bhar));
+  format evtdate evtdate_l1 dt_bgn_bhar_l1 dt_bgn_bhar  dt_end_bhar mmddyy10.;
+  label evtdate="the trading day of event"
+        evtdate_l1="one trading day prior to the event trading day"
+		dt_bgn_bhar_l1="one trading day prior to the start trading day of BHAR period relative to the event"
+        dt_bgn_bhar="start of BHAR period relative to the event"
+	    dt_end_bhar="start of BHAR period relative to the event";
+		index+1;
+  if nmiss(evtdate, evtdate_l1,dt_bgn_bhar_l1, dt_bgn_bhar, dt_end_bhar)=0;
+run;
+
+proc sql;
+create table evt_d1 as select a.*, b.evtdate, b.evtdate_l1, b.dt_bgn_bhar_l1, b.dt_bgn_bhar, b.dt_end_bhar, b.index
+from &evt_in. as  a left join caldates as b
+on a.&date_evt.>b.evtdate_l1 and a.&date_evt.<=b.evtdate;
+quit;
+
+@@BEGIN VARIABLE: cret_bgn_l1@@
+@@BEGIN VARIABLE: cret_emkt_bgn_l1@@
+@@BEGIN VARIABLE: cret_vmkt_bgn_l1@@
+@@BEGIN VARIABLE: cret_msp5_bgn_l1@@
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_bgn_l1, b.cret_emkt as cret_emkt_bgn_l1, b.cret_vmkt as cret_vmkt_bgn_l1
+                                 , b.cret_msp5 as cret_msp5_bgn_l1
+								 from evt_d1 as a left join crsp_output as b
+								 on a.permno=b.permno and a.dt_bgn_bhar_l1=b.date;
+								 quit;
+@@END VARIABLE: cret_bgn_l1@@
+@@END VARIABLE: cret_emkt_bgn_l1@@
+@@END VARIABLE: cret_vmkt_bgn_l1@@
+@@END VARIABLE: cret_msp5_bgn_l1@@
+
+@@BEGIN VARIABLE: cret_end@@
+@@BEGIN VARIABLE: cret_emkt_end@@
+@@BEGIN VARIABLE: cret_vmkt_end@@
+@@BEGIN VARIABLE: cret_msp5_end@@
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_end, b.cret_emkt as cret_emkt_end
+                                 , b.cret_vmkt as cret_vmkt_end, b.cret_msp5 as cret_msp5_end
+                             	 from evt_d1 as a left join crsp_output as b
+							     on a.permno=b.permno and a.dt_end_bhar=b.date;
+								 quit;
+@@END VARIABLE: cret_end@@
+@@END VARIABLE: cret_emkt_end@@
+@@END VARIABLE: cret_vmkt_end@@
+@@END VARIABLE: cret_msp5_end@@
+
+@@BEGIN VARIABLE: bhar_emkt@@
+@@BEGIN VARIABLE: bhar_vmkt@@
+@@BEGIN VARIABLE: bhar_msp5@@
+data &evt_out.;
+set evt_d1;
+bhar_emkt_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_emkt_end+1)/(cret_emkt_bgn_l1+1);
+bhar_vmkt_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vmkt_end+1)/(cret_vmkt_bgn_l1+1);
+bhar_msp5_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_msp5_end+1)/(cret_msp5_bgn_l1+1);
+keep permno &date_evt. evtdate bhar_emkt_&vbhar. bhar_vmkt_&vbhar. bhar_msp5_&vbhar.;
+run;
+@@END VARIABLE: bhar_emkt@@
+@@END VARIABLE: bhar_vmkt@@
+@@END VARIABLE: bhar_msp5@@
+%MEND;
+
+/************Part Four: invoke bharmkt_event macro to generate the bharmkt varibale data  *********************************/
+%bharmkt_event(origin=50, vbhar=video_00_d2, bgn_evt=0, end_evt=2, evt_in=input.event, date_evt=video_dt, evt_out=video_bharmkt_00_d2);

@@ -1,0 +1,404 @@
+/* 
+This code calculates both short-term and long-term Buy-and-Hold Abnormal Returns (BHAR) for event studies. 
+The code is divided into two main parts:
+- Part A: Constructs market returns and benchmarks based on Barber and Lyon (1997) methodology.
+- Part B: Calculates BHAR during the specified window relative to the event date.
+*/
+
+/* 
+Variables Overview:
+1. Known Variables (Directly from Databases):
+| Variable Name | Description | Database |
+|---------------|-------------|----------|
+| @@VARIABLE: permno@@permno | CRSP security identifier | crsp.msf, crsp.dse |
+| @@VARIABLE: prc@@prc | Stock price | crsp.msf, crsp.dse |
+| @@VARIABLE: ret@@ret | Stock return | crsp.msf, crsp.dse |
+| @@VARIABLE: vol@@vol | Trading volume | crsp.msf |
+| @@VARIABLE: gvkey@@gvkey | Company identifier | comp.funda |
+| @@VARIABLE: datadate@@datadate | Fiscal year-end date | comp.funda |
+| @@VARIABLE: SEQ@@SEQ | Shareholders' equity | comp.funda |
+| @@VARIABLE: PSTKRV@@PSTKRV | Preferred stock redemption value | comp.funda |
+| @@VARIABLE: PSTKL@@PSTKL | Preferred stock liquidating value | comp.funda |
+| @@VARIABLE: TXDB@@TXDB | Deferred taxes | comp.funda |
+| @@VARIABLE: ITCB@@ITCB | Investment tax credit | comp.funda |
+
+2. Calculated Variables:
+| Variable Name | Description | Formula |
+|---------------|-------------|---------|
+| @@VARIABLE: P@@P | Adjusted price at period end | \( P = \frac{|prc|}{cfacpr} \) |
+| @@VARIABLE: TSO@@TSO | Adjusted total shares outstanding | \( TSO = shrout \times cfacshr \times 1000 \) |
+| @@VARIABLE: ME@@ME | Market capitalization | \( ME = |prc| \times shrout / 1000 \) |
+| @@VARIABLE: BE@@BE | Book value of equity | \( BE = SEQ \) |
+| @@VARIABLE: BM@@BM | Book-to-Market ratio | \( BM = \frac{BE}{ME} \) |
+| @@VARIABLE: r_s05@@r_s05 | Quintile size portfolio | Based on size deciles |
+| @@VARIABLE: r_s10@@r_s10 | Decile size portfolio | Based on size deciles |
+| @@VARIABLE: r_sb25@@r_sb25 | Size quintile and BtM quintile portfolio | \( r_sb25 = r_s05 \times r_s05b05 \) |
+| @@VARIABLE: r_sb50@@r_sb50 | Size decile and BtM quintile portfolio | \( r_sb50 = r_s10 \times r_s10b05 \) |
+| @@VARIABLE: ret_es05@@ret_es05 | Equal-weighted size quintile portfolio return | Mean of returns within size quintile |
+| @@VARIABLE: ret_vs05@@ret_vs05 | Value-weighted size quintile portfolio return | Weighted average of returns within size quintile |
+| @@VARIABLE: ret_es10@@ret_es10 | Equal-weighted size decile portfolio return | Mean of returns within size decile |
+| @@VARIABLE: ret_vs10@@ret_vs10 | Value-weighted size decile portfolio return | Weighted average of returns within size decile |
+| @@VARIABLE: ret_esb25@@ret_esb25 | Equal-weighted size and BtM quintile portfolio return | Mean of returns within size and BtM quintile |
+| @@VARIABLE: ret_vsb25@@ret_vsb25 | Value-weighted size and BtM quintile portfolio return | Weighted average of returns within size and BtM quintile |
+| @@VARIABLE: ret_esb50@@ret_esb50 | Equal-weighted size and BtM decile portfolio return | Mean of returns within size and BtM decile |
+| @@VARIABLE: ret_vsb50@@ret_vsb50 | Value-weighted size and BtM decile portfolio return | Weighted average of returns within size and BtM decile |
+| @@VARIABLE: cret@@cret | Cumulative return | \( cret = \prod (1 + ret) - 1 \) |
+| @@VARIABLE: bhar_emkt@@bhar_emkt | BHAR relative to equal-weighted market return | \( bhar_emkt = \frac{cret_{end} + 1}{cret_{bgn\_l1} + 1} - \frac{cret_{emkt\_end} + 1}{cret_{emkt\_bgn\_l1} + 1} \) |
+| @@VARIABLE: bhar_vmkt@@bhar_vmkt | BHAR relative to value-weighted market return | \( bhar_vmkt = \frac{cret_{end} + 1}{cret_{bgn\_l1} + 1} - \frac{cret_{vmkt\_end} + 1}{cret_{vmkt\_bgn\_l1} + 1} \) |
+
+3. Time Range for Variables:
+| Variable Name | Time Range |
+|---------------|------------|
+| @@VARIABLE: datadate@@datadate | 01JAN2010 - 31DEC2020 |
+| @@VARIABLE: edate@@edate | Event date within the sample period |
+*/
+
+/* Step 1. Specifying Options */
+libname vars "/home/yale/yiliwu/trial/bhar/output"; 
+libname input "/home/yale/yiliwu/trial/bhar/input"; 
+%let bgndate = 01JAN2010; /* Select the beginning date of a period that covers the data needed for the event study */
+%let enddate = 31DEC2020; /* Select the end date of a period that covers the data needed for the event study */
+
+/* Create a CRSP Subsample with Monthly Stock and Event Variables */
+/* Restriction on the type of shares (common stocks only) */
+%let sfilter = (shrcd in (10,11));
+
+/* Selected variables from the CRSP monthly data file (crsp.msf file) */
+%let msfvars_m = permco prc ret vol shrout cfacpr cfacshr;
+%let msevars_m = ncusip exchcd shrcd siccd ;
+
+/* Selected variables from the CRSP monthly data file (crsp.dse file) */
+%let msfvars_d = permco prc ret ;
+%let msevars_d =  exchcd shrcd  ;
+
+/* This procedure creates a Monthly CRSP dataset named "CRSP_M"  */
+%crspmerge(s=m,start=&bgndate,end=&enddate,sfvars=&msfvars_m,sevars=&msevars_m,filters=&sfilter);
+%crspmerge(s=d,start=&bgndate,end=&enddate,sfvars=&msfvars_d,sevars=&msevars_d,filters=&sfilter);
+
+/****specify the BHAR window******/
+%let origin=50; /* Specify the origin trading day of the window relative to the event date */
+%let bgn=0;   /* Specify the start trading day of the window relative to the event date */
+%let end=2; /* Specify the end trading day of the window relative to the event date */   
+%let vbhar=00_d2;   /* Specify the BHAR variable mark of beginning and end day */
+
+/******specify the event table*****/
+%let in_table=event;  /* Specify the event table */
+%let in_edate=video_dt;  /* Specify the event date */
+
+data evt_input;
+set input.&in_table.;
+@@BEGIN VARIABLE: edate@@edate=&in_edate.;@@END VARIABLE: edate@@
+format edate date9.;
+keep permno edate;
+run;   
+
+/* Part A starts */
+/* Adjust Share and Price in Monthly Data */
+data crsp_m;
+set crsp_m;
+DATE = INTNX("MONTH",date,0,"E");
+@@BEGIN VARIABLE: P@@P = abs(prc)/cfacpr;@@END VARIABLE: P@@
+@@BEGIN VARIABLE: TSO@@TSO=shrout*cfacshr*1000;@@END VARIABLE: TSO@@
+if TSO<=0 then TSO=.;
+@@BEGIN VARIABLE: ME@@ME = abs(prc)*shrout/1000;@@END VARIABLE: ME@@
+label P = "Price at Period End, Adjusted";
+label TSO = "Total Shares Outstanding, Adjusted";
+label ME = "Issue-Level Market Capitalization, x$1m";
+drop ncusip prc cfacpr shrout shrcd;
+format ret percentn8.4 ME P dollar12.3 TSO comma12.;
+run;
+
+/* Create Total Market Capitalization at the Company Level */
+proc sql  undo_policy=none;
+create table crsp_m
+as select *, sum(me) as me_comp "Company-Level Market Cap, $million" format dollar12.3
+from crsp_m
+group by permco,date
+order by permno,date;
+quit;
+
+/* Get Book Value of Equity from Compustat to Create B/P Rankings */
+data comp1;
+set comp.funda (keep=gvkey datadate cusip indfmt datafmt consol popsrc
+    SEQ PSTKRV PSTKL PSTK TXDB ITCB);
+where indfmt='INDL' and datafmt='STD' and consol='C' and popsrc='D'
+  and datadate>="&bgndate."d;
+  if SEQ>0;                        
+  @@BEGIN VARIABLE: BE@@BE = SEQ;@@END VARIABLE: BE@@  /* Shareholders' Equity */
+  label BE = "Book Value of Equity";
+  if BE>=0;
+  /* Barber and Lyon (JFE 1998):                                                 */
+  /* BE = stockholders' equity */
+ label datadate = "Fiscal Year End Date";
+ keep gvkey datadate BE;
+run;
+
+/* Add Historical PERMCO and Permno identifier */
+proc sql;
+  create table comp2
+  as select a.*, b.lpermco as permco, b.lpermno as permno, b.linkprim
+  from comp1 as a, crsp.ccmxpf_linktable as b
+  where a.gvkey = b.gvkey and
+  b.LINKTYPE in ("LU","LC") and
+ (b.LINKDT <= a.datadate) and (a.datadate <= b.LINKENDDT or missing(b.LINKENDDT));
+quit;
+
+/* Sorting into Buckets is done in July of Each Year t               */
+/* Additional Requirements:                                          */
+/* - Compustat data is available for at least 2 years                */
+/* - CRSP data available on FYE of year t-1 and June of year t       */
+/* - at least 6 months of returns in CRSP between t-1 and t          */
+/* - size weights are constructed using the market value in June     */
+/* - B/M Ratio uses the market cap at FYE of the year t-1            */
+
+/* Construct Book to Market Ratio Each Fiscal Year End               */
+proc sql;
+  create table comp3
+  as select distinct b.permno,a.gvkey,year(a.datadate) as YEAR,a.datadate,a.linkprim,
+  a.BE,b.me,b.siccd,a.be/b.me_comp as @@BEGIN VARIABLE: BM@@BM@@END VARIABLE: BM@@ "Book-to-Market Ratio" format comma8.2
+  from comp2 as a, crsp_m as b
+  where a.permco=b.permco and datadate=intnx("month",date,0,"E")
+order by permno,datadate;
+quit;
+
+data size;
+set crsp_m;
+by permno date;
+if month(date)=6;rename me=SIZE;
+run;
+
+proc sort data=size;
+by date size;
+run;
+
+proc univariate data=size noprint;
+where exchcd=1;
+by date;
+var size;
+output out=NYSE pctlpts = 10 to 90 by 10 pctlpre=dec;
+run;
+
+data size;
+merge size NYSE;
+by date;
+if size>0 and size < dec20 then @@BEGIN VARIABLE: r_s05@@r_s05@@END VARIABLE: r_s05@@ = 0;
+else if size >= dec20 and size < dec40 then r_s05 =1;
+else if size >= dec40 and size < dec60 then r_s05 =2;
+else if size >= dec60 and size < dec80 then r_s05 =3;
+else if size >= dec80                  then r_s05 =4;
+if size>0 and size < dec10 then @@BEGIN VARIABLE: r_s10@@r_s10@@END VARIABLE: r_s10@@ = 0;
+else if size >= dec10 and size < dec20 then r_s10 =1;
+else if size >= dec20 and size < dec30 then r_s10 =2;
+else if size >= dec30 and size < dec40 then r_s10 =3;
+else if size >= dec40 and size < dec50 then r_s10 =4;
+else if size >= dec50 and size < dec60 then r_s10 =5;
+else if size >= dec60 and size < dec70 then r_s10 =6;
+else if size >= dec70 and size < dec80 then r_s10 =7;
+else if size >= dec80 and size < dec90 then r_s10 =8;
+else if size >= dec90                  then r_s10 =9;
+drop dec10 dec20 dec30 dec40 dec50 dec60 dec70 dec80 dec90;
+label r_s05 = " Quintile Size Portfolio";
+label r_s10 = " Decile Size Portfolio";
+run;
+
+proc sql;
+  create table comp6
+  as select distinct a.permno, a.gvkey, b.date, b.r_s05, b.r_s10, b.size, a.year, a.bm
+  from comp3 as a, size as b
+  where a.permno=b.permno and year(date)=year+1
+   and not missing(size+bm+ret);
+quit;
+
+proc sort data=comp6 out=port1 nodupkey; by date r_s05 permno; run;
+
+proc rank data=port1 out=port1 group=5;
+  by date r_s05;
+  var bm;
+  ranks r_s05b05;
+run;
+
+proc sort data=port1 out=port1 nodupkey; by date r_s10 permno; run;
+
+proc rank data=port1 out=port1 group=5;
+  by date r_s10;
+  var bm;
+  ranks r_s10b05;
+run;
+
+data port_sb25;
+set port1;
+@@BEGIN VARIABLE: r_sb25@@r_sb25@@END VARIABLE: r_sb25@@=put(r_s05,1.)||put(r_s05b05,1.);
+if index(r_sb25, '.') then delete;
+label r_sb25="Size Quintile, BtM Quintile Portfolio Number";
+run;
+
+data port_sb50;
+set port1;
+@@BEGIN VARIABLE: r_sb50@@r_sb50@@END VARIABLE: r_sb50@@=put(r_s10,1.)||put(r_s10b05,1.);
+if index(r_sb50, '.') then delete;
+label r_sb50="Size Decile, BtM Quintile Portfolio Number";
+run;
+
+proc sql;
+  create table crsp_d1
+  as select a.*, b.date as formdate "Formation Date", b.r_s05, b.r_s10, b.size as sizew
+  from crsp_d (keep=permno date ret) as a, port1 as b
+  where a.permno=b.permno and intnx('month', b.date,1,'e')<=a.date<=intnx('month', b.date,12,'e');
+quit;
+
+proc sql;
+  create table crsp_d1
+  as select a.*, b.r_sb25
+  from crsp_d1 as a, port_sb25 as b
+  where a.permno=b.permno and intnx('month', b.date,1,'e')<=a.formdate<=intnx('month', b.date,12,'e');
+quit;
+
+proc sql;
+  create table crsp_d1
+  as select a.*, b.r_sb50
+  from crsp_d1 as a, port_sb50 as b
+  where a.permno=b.permno and intnx('month', b.date,1,'e')<=a.formdate<=intnx('month', b.date,12,'e');
+quit;
+
+proc sql;
+create table ret_s05 as select date, r_s05, mean(ret) as @@BEGIN VARIABLE: ret_es05@@ret_es05@@END VARIABLE: ret_es05@@,  sum(ret*sizew)/sum(sizew) as @@BEGIN VARIABLE: ret_vs05@@ret_vs05@@END VARIABLE: ret_vs05@@
+from crsp_d1
+where sizew>0
+group by date, r_s05;
+quit;
+
+proc sql;
+create table ret_s10 as select date, r_s10, mean(ret) as @@BEGIN VARIABLE: ret_es10@@ret_es10@@END VARIABLE: ret_es10@@,  sum(ret*sizew)/sum(sizew) as @@BEGIN VARIABLE: ret_vs10@@ret_vs10@@END VARIABLE: ret_vs10@@
+from crsp_d1
+where sizew>0
+group by date, r_s10;
+quit;
+
+proc sql;
+create table ret_sb25 as select date, r_sb25, mean(ret) as @@BEGIN VARIABLE: ret_esb25@@ret_esb25@@END VARIABLE: ret_esb25@@,  sum(ret*sizew)/sum(sizew) as @@BEGIN VARIABLE: ret_vsb25@@ret_vsb25@@END VARIABLE: ret_vsb25@@
+from crsp_d1
+where sizew>0
+group by date, r_sb25;
+quit;
+
+proc sql;
+create table ret_sb50 as select date, r_sb50, mean(ret) as @@BEGIN VARIABLE: ret_esb50@@ret_esb50@@END VARIABLE: ret_esb50@@,  sum(ret*sizew)/sum(sizew) as @@BEGIN VARIABLE: ret_vsb50@@ret_vsb50@@END VARIABLE: ret_vsb50@@
+from crsp_d1
+where sizew>0
+group by date, r_sb50;
+quit;
+
+proc sql;
+create table crsp_d2 as select a.*, b.ret_es05, b.ret_vs05
+from crsp_d1 as a left join ret_s05 as b
+on a.date=b.date and a.r_s05=b.r_s05;
+quit;
+
+proc sql;
+create table crsp_d2 as select a.*, b.ret_es10, b.ret_vs10
+from crsp_d2 as a left join ret_s10 as b
+on a.date=b.date and a.r_s10=b.r_s10;
+quit;
+
+proc sql;
+create table crsp_d2 as select a.*, b.ret_esb25, b.ret_vsb25
+from crsp_d2 as a left join ret_sb25 as b
+on a.date=b.date and a.r_sb25=b.r_sb25;
+quit;
+
+proc sql;
+create table crsp_d2 as select a.*, b.ret_esb50, b.ret_vsb50
+from crsp_d2 as a left join ret_sb50 as b
+on a.date=b.date and a.r_sb50=b.r_sb50;
+quit;
+
+proc sql;
+create table crsp_d2 as select a.*, b.vwretd as @@BEGIN VARIABLE: ret_vmkt@@ret_vmkt@@END VARIABLE: ret_vmkt@@, b.ewretd as @@BEGIN VARIABLE: ret_emkt@@ret_emkt@@END VARIABLE: ret_emkt@@
+from crsp_d2 as a left join crsp.dsi as b
+on a.date=b.date;
+quit;
+
+proc sort data=crsp_d2 nodupkey;
+by permno date;
+run;
+
+proc expand data=crsp_d2 out=crsp_output method=none;
+  by permno; id date;
+  convert ret=@@BEGIN VARIABLE: cret@@cret@@END VARIABLE: cret@@/transformout=(+1 cuprod -1);
+  convert ret_emkt=@@BEGIN VARIABLE: cret_emkt@@cret_emkt@@END VARIABLE: cret_emkt@@/transformout=(+1 cuprod -1);
+  convert ret_vmkt=@@BEGIN VARIABLE: cret_vmkt@@cret_vmkt@@END VARIABLE: cret_vmkt@@/transformout=(+1 cuprod -1);
+  convert ret_es05=@@BEGIN VARIABLE: cret_es05@@cret_es05@@END VARIABLE: cret_es05@@/transformout=(+1 cuprod -1);
+  convert ret_vs05=@@BEGIN VARIABLE: cret_vs05@@cret_vs05@@END VARIABLE: cret_vs05@@/transformout=(+1 cuprod -1);
+  convert ret_es10=@@BEGIN VARIABLE: cret_es10@@cret_es10@@END VARIABLE: cret_es10@@/transformout=(+1 cuprod -1);
+  convert ret_vs10=@@BEGIN VARIABLE: cret_vs10@@cret_vs10@@END VARIABLE: cret_vs10@@/transformout=(+1 cuprod -1);
+  convert ret_esb25=@@BEGIN VARIABLE: cret_esb25@@cret_esb25@@END VARIABLE: cret_esb25@@/transformout=(+1 cuprod -1);
+  convert ret_vsb25=@@BEGIN VARIABLE: cret_vsb25@@cret_vsb25@@END VARIABLE: cret_vsb25@@/transformout=(+1 cuprod -1);
+  convert ret_esb50=@@BEGIN VARIABLE: cret_esb50@@cret_esb50@@END VARIABLE: cret_esb50@@/transformout=(+1 cuprod -1);
+  convert ret_vsb50=@@BEGIN VARIABLE: cret_vsb50@@cret_vsb50@@END VARIABLE: cret_vsb50@@/transformout=(+1 cuprod -1);
+run;
+
+/****the crsp_output is the table of the daily return of stock and its benchmark*****/
+/****the crsp_output is the end of part A and the input of part B*****/
+/* Part A end */
+
+/* Part B starts */
+data caldates;
+merge crsp.dsi(keep=date rename=(date=origin))
+      crsp.dsi(keep=date firstobs=%eval(&origin.-1) rename=(date=evtdate_l1))
+	   crsp.dsi(keep=date firstobs=%eval(&origin.) rename=(date=evtdate))
+	   crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn.-1) rename=(date=dt_bgn_bhar_l1))
+       crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn.) rename=(date=dt_bgn_bhar))
+       crsp.dsi(keep=date firstobs=%eval(&origin.+&end.) rename=(date=dt_end_bhar));
+  format evtdate evtdate_l1 dt_bgn_bhar_l1 dt_bgn_bhar  dt_end_bhar mmddyy10.;
+  label evtdate="the trading day of event"
+        evtdate_l1="one trading day prior to the event trading day"
+		dt_bgn_bhar_l1="one trading day prior to the start trading day of BHAR period relative to the event"
+        dt_bgn_bhar="start of BHAR period relative to the event"
+	    dt_end_bhar="start of BHAR period relative to the event";
+		index+1;
+  if nmiss(evtdate, evtdate_l1,dt_bgn_bhar_l1, dt_bgn_bhar, dt_end_bhar)=0;
+run;
+
+proc sql;
+create table evt_d1 as select a.*, b.evtdate, b.evtdate_l1, b.dt_bgn_bhar_l1, b.dt_bgn_bhar, b.dt_end_bhar, b.index
+from evt_input as  a left join caldates as b
+on a.edate>b.evtdate_l1 and a.edate<=b.evtdate;
+quit;
+
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_bgn_l1, b.cret_emkt as cret_emkt_bgn_l1, b.cret_vmkt as cret_vmkt_bgn_l1
+                                 , b.cret_es05 as cret_es05_bgn_l1, b.cret_vs05 as cret_vs05_bgn_l1
+								 , b.cret_es10 as cret_es10_bgn_l1, b.cret_vs10 as cret_vs10_bgn_l1
+                                 , b.cret_esb25 as cret_esb25_bgn_l1, b.cret_vsb25 as cret_vsb25_bgn_l1
+                                 , b.cret_esb50 as cret_esb50_bgn_l1, b.cret_vsb50 as cret_vsb50_bgn_l1
+																 from evt_d1 as a left join crsp_output as b
+																 on a.permno=b.permno and a.dt_bgn_bhar_l1=b.date;
+																 quit;
+
+proc sql;
+create table evt_d1 as select a.*, b.cret as cret_end, b.cret_emkt as cret_emkt_end, b.cret_vmkt as cret_vmkt_end
+                                 , b.cret_es05 as cret_es05_end, b.cret_vs05 as cret_vs05_end
+								 , b.cret_es10 as cret_es10_end, b.cret_vs10 as cret_vs10_end
+                                 , b.cret_esb25 as cret_esb25_end, b.cret_vsb25 as cret_vsb25_end
+                                 , b.cret_esb50 as cret_esb50_end, b.cret_vsb50 as cret_vsb50_end
+																 from evt_d1 as a left join crsp_output as b
+																 on a.permno=b.permno and a.dt_end_bhar=b.date;
+																 quit;
+
+data vars.bhar_&vbhar.;
+set evt_d1;
+@@BEGIN VARIABLE: bhar_emkt@@bhar_emkt_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_emkt_end+1)/(cret_emkt_bgn_l1+1);@@END VARIABLE: bhar_emkt@@
+@@BEGIN VARIABLE: bhar_es05@@bhar_es05_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_es05_end+1)/(cret_es05_bgn_l1+1);@@END VARIABLE: bhar_es05@@	
+@@BEGIN VARIABLE: bhar_es10@@bhar_es10_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_es10_end+1)/(cret_es10_bgn_l1+1);@@END VARIABLE: bhar_es10@@
+@@BEGIN VARIABLE: bhar_esb25@@bhar_esb25_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_esb25_end+1)/(cret_esb25_bgn_l1+1);@@END VARIABLE: bhar_esb25@@
+@@BEGIN VARIABLE: bhar_esb50@@bhar_esb50_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_esb50_end+1)/(cret_esb50_bgn_l1+1);@@END VARIABLE: bhar_esb50@@	
+
+@@BEGIN VARIABLE: bhar_vmkt@@bhar_vmkt_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vmkt_end+1)/(cret_vmkt_bgn_l1+1);@@END VARIABLE: bhar_vmkt@@
+@@BEGIN VARIABLE: bhar_vs05@@bhar_vs05_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vs05_end+1)/(cret_vs05_bgn_l1+1);@@END VARIABLE: bhar_vs05@@	
+@@BEGIN VARIABLE: bhar_vs10@@bhar_vs10_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vs10_end+1)/(cret_vs10_bgn_l1+1);@@END VARIABLE: bhar_vs10@@
+@@BEGIN VARIABLE: bhar_vsb25@@bhar_vsb25_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vsb25_end+1)/(cret_vsb25_bgn_l1+1);@@END VARIABLE: bhar_vsb25@@
+@@BEGIN VARIABLE: bhar_vsb50@@bhar_vsb50_&vbhar.=(cret_end+1)/(cret_bgn_l1+1)-(cret_vsb50_end+1)/(cret_vsb50_bgn_l1+1);@@END VARIABLE: bhar_vsb50@@	
+
+keep permno edate evtdate bhar_emkt_&vbhar. bhar_es05_&vbhar. bhar_es10_&vbhar. bhar_esb25_&vbhar. bhar_esb50_&vbhar.
+bhar_vmkt_&vbhar. bhar_vs05_&vbhar. bhar_vs10_&vbhar. bhar_vsb25_&vbhar. bhar_vsb50_&vbhar.;
+run;

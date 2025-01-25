@@ -1,0 +1,133 @@
+/* 全局样式 */
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f4f4f4;
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start; /* 顶部对齐 */
+    min-height: 100vh;
+}
+
+/* 容器样式 */
+.container {
+    background-color: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    text-align: center;
+    max-width: 800px; /* 增加宽度以容纳更多内容 */
+    width: 100%;
+}
+
+/* 标题样式 */
+h1 {
+    color: #333;
+    font-size: 24px;
+    margin-bottom: 20px;
+}
+
+/* 搜索框样式 */
+.search-box {
+    margin-bottom: 20px;
+}
+
+.search-box input {
+    padding: 10px;
+    width: 100%;
+    margin-bottom: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+/* 选项按钮样式 */
+.options {
+    display: flex;
+    justify-content: space-between;
+}
+
+.options button {
+    padding: 10px 20px;
+    background-color: #007bff;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    width: 48%; /* 调整按钮宽度 */
+}
+
+.options button:hover {
+    background-color: #0056b3;
+}
+
+/* 结果区域样式 */
+#result {
+    margin-top: 20px;
+    text-align: left;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background-color: #f9f9f9;
+    font-size: 14px;
+    overflow-y: auto; /* 添加滚动条 */
+}
+
+/* 文件内容样式 */
+#fileContent {
+    white-space: pre; /* 保留所有空格和换行，不自动换行 */
+    font-family: monospace; /* 使用等宽字体 */
+    background-color: #f0f0f0;
+    padding: 10px;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+    margin-top: 10px;
+    overflow: auto; /* 允许水平和垂直滚动条 */
+    max-height: 500px; /* 限制最大高度，触发垂直滚动条 */
+    max-width: 100%; /* 限制最大宽度，触发水平滚动条 */
+    word-wrap: normal; /* 不强制打断单词 */
+    word-break: normal; /* 不强制打断单词 */
+}
+
+/* 导航栏样式 */
+.nav-bar {
+    display: flex;
+    flex-direction: column; /* 垂直排列 */
+    margin-bottom: 10px;
+    padding: 10px;
+    background-color: #e9ecef;
+    border-radius: 4px;
+}
+
+/* 导航栏中的每个部分（参考文献、相关代码） */
+.nav-section {
+    margin-bottom: 15px; /* 增加间距 */
+}
+
+.nav-section strong {
+    display: block; /* 让标题单独一行 */
+    margin-bottom: 5px; /* 增加标题和内容之间的间距 */
+    font-size: 16px; /* 调整标题字体大小 */
+}
+
+/* 导航栏中的链接部分 */
+.nav-links {
+    margin-left: 10px; /* 增加左边距 */
+}
+
+.nav-links div {
+    margin-bottom: 5px; /* 增加链接之间的间距 */
+}
+
+.nav-bar a {
+    color: #007bff;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.nav-bar a:hover {
+    text-decoration: underline;
+}
+

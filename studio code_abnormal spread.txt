@@ -1,0 +1,357 @@
+/*
+这段代码的主要功能是计算事件发生前后股票的异常价差。它首先从WRDS TAQ数据库提取每日的有效价差数据，然后使用宏程序针对不同的事件窗口和基准窗口计算累计异常价差（ab_espdp）。该代码支持多种不同的事件和基准窗口定义，并将结果输出到多个数据集中，方便后续分析。
+*/
+
+/*
+表格一：已知变量（直接引自数据库）
+| 名字              | 含义                                         | 数据库       |
+|-------------------|---------------------------------------------|------------|
+| @@VARIABLE: sym_root@@sym_root       | 股票代码根                                  | srca.wrds_taqms_iid        |
+| @@VARIABLE: date@@date            | 日期                                       | srca.wrds_taqms_iid        |
+| @@VARIABLE: EffectiveSpread_Percent_Ave@@EffectiveSpread_Percent_Ave    | 平均有效价差（百分比）                       | srca.wrds_taqms_iid       |
+| @@VARIABLE: EffectiveSpread_Percent_DW@@EffectiveSpread_Percent_DW    | 美元加权有效价差（百分比）                | srca.wrds_taqms_iid        |
+| @@VARIABLE: EffectiveSpread_Percent_SW@@EffectiveSpread_Percent_SW   | 股票加权有效价差（百分比）                | srca.wrds_taqms_iid        |
+| @@VARIABLE: permno@@permno             | CRSP 证券标识符                  | wrdsapps.taqmclink   |
+*/
+
+/*
+表格二：计算得到的变量（由已知变量计算得来）
+| 名字                                 | 含义                                                            | 公式                                                                                                   |
+|--------------------------------------|-----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| @@VARIABLE: d_espdp_aw@@d_espdp_aw                  |  平均有效价差（百分比）                                                        | EffectiveSpread_Percent_Ave                                                                                     |
+| @@VARIABLE: d_espdp_dw@@d_espdp_dw               | 美元加权有效价差（百分比）                                           | EffectiveSpread_Percent_DW                                                                                                  |
+| @@VARIABLE: d_espdp_sw@@d_espdp_sw                | 股票加权有效价差（百分比）                          | EffectiveSpread_Percent_SW                                                                                          |
+| @@VARIABLE: c_espdp_aw@@c_espdp_aw             | 累计平均有效价差（百分比）                         | cusum(d_espdp_aw) |
+| @@VARIABLE: c_espdp_dw@@c_espdp_dw           | 累计美元加权有效价差（百分比）         | cusum(d_espdp_dw) |
+| @@VARIABLE: c_espdp_sw@@c_espdp_sw           | 累计股票加权有效价差（百分比）                          | cusum(d_espdp_sw) |
+| @@VARIABLE: ab_espdp_aw_d02_a1@@ab_espdp_aw_d02_a1            | d02_a1事件窗口累计异常平均有效价差（百分比）                          | (c_espdp_aw_end_evt-c_espdp_aw_bgn_evt_l1)/cnt_evt - (c_espdp_aw_end_ben-c_espdp_aw_bgn_ben_l1)/cnt_ben |
+| @@VARIABLE: ab_espdp_dw_d02_a1@@ab_espdp_dw_d02_a1          | d02_a1事件窗口累计异常美元加权有效价差（百分比）         |  (c_espdp_dw_end_evt-c_espdp_dw_bgn_evt_l1)/cnt_evt - (c_espdp_dw_end_ben-c_espdp_dw_bgn_ben_l1)/cnt_ben  |
+| @@VARIABLE: ab_espdp_sw_d02_a1@@ab_espdp_sw_d02_a1           | d02_a1事件窗口累计异常股票加权有效价差（百分比）           | (c_espdp_sw_end_evt-c_espdp_sw_bgn_evt_l1)/cnt_evt - (c_espdp_sw_end_ben-c_espdp_sw_bgn_ben_l1)/cnt_ben  |
+*/
+
+/*
+时间限制变量时间范围表
+| 变量名     | 时间范围       |
+|----------|----------------|
+| uni_begdt|  2014       |
+| uni_enddt  | 2020    |
+*/
+/***********************the code is to measure abnormal spread************************************************/
+libname output "/home/yale/yiliwu/trial/outputs";
+libname input "/home/yale/yiliwu/trial/inputs";
+libname srca "/wrds/nyse/sasdata/wrds_taqms_iid";
+/*******************Part One: extract daily taq variables from wrds_taqms_iid *************************/
+%let uni_begdt = 2014;
+%let uni_enddt = 2020;
+%let count="&uni_enddt"-"&uni_begdt"+1;
+data taqvar_d;
+    @@BEGIN VARIABLE: EffectiveSpread_Percent_Ave@@
+	@@BEGIN VARIABLE: EffectiveSpread_Percent_DW@@
+	@@BEGIN VARIABLE: EffectiveSpread_Percent_SW@@
+set srca.wrds_iid_2013;
+d_espdp_aw=EffectiveSpread_Percent_Ave;
+d_espdp_dw=EffectiveSpread_Percent_DW;
+d_espdp_sw=EffectiveSpread_Percent_SW;
+@@BEGIN VARIABLE: sym_root@@
+keep sym_root date d_espdp_aw d_espdp_dw d_espdp_sw;
+@@END VARIABLE: sym_root@@
+
+run;
+	@@END VARIABLE: EffectiveSpread_Percent_Ave@@
+    @@END VARIABLE: EffectiveSpread_Percent_DW@@
+	@@END VARIABLE: EffectiveSpread_Percent_SW@@
+data filelist;
+do i=1 to &count;
+num="&uni_begdt"+i-1;
+num_string=input(num,$16.);
+output;
+end;
+run;
+proc sql noprint;
+select scan(num_string,1,';'),count(num) into: filenames separated by ';',:n
+from filelist;
+quit;
+%macro function;
+  %do i=1 %to &n;
+  %let mark=%lowcase(%scan(&filenames,&i,";"));
+data s1;
+set srca.wrds_iid_&mark.;
+@@BEGIN VARIABLE: d_espdp_aw@@
+@@BEGIN VARIABLE: d_espdp_dw@@
+@@BEGIN VARIABLE: d_espdp_sw@@
+d_espdp_aw=EffectiveSpread_Percent_Ave;
+d_espdp_dw=EffectiveSpread_Percent_DW;
+d_espdp_sw=EffectiveSpread_Percent_SW;
+@@END VARIABLE: d_espdp_aw@@
+@@END VARIABLE: d_espdp_dw@@
+@@END VARIABLE: d_espdp_sw@@
+keep sym_root date d_espdp_aw d_espdp_dw d_espdp_sw;
+run;
+data taqvar_d;
+set taqvar_d s1;
+run;
+%end;
+%mend;
+%function;
+proc sql;
+	@@BEGIN VARIABLE: permno@@
+  create table taqvar_d as select a.*, b.permno
+  from taqvar_d as a left join wrdsapps.taqmclink as b
+  on a.sym_root=b.sym_root and a.date=b.date;
+quit;
+		@@END VARIABLE: permno@@
+data taqvar_d;
+set taqvar_d;
+if missing(permno) then delete;
+run;
+proc sort data=taqvar_d nodupkey;
+by permno date;
+run;
+		@@BEGIN VARIABLE: c_espdp_aw@@
+		@@BEGIN VARIABLE: c_espdp_dw@@
+		@@BEGIN VARIABLE: c_espdp_sw@@
+proc expand data=taqvar_d out=taqvar_c method=none;
+  by permno;
+  convert d_espdp_aw=c_espdp_aw/transformout=(cusum);
+  convert d_espdp_dw=c_espdp_dw/transformout=(cusum);
+  convert d_espdp_sw=c_espdp_sw/transformout=(cusum);
+run;
+		@@END VARIABLE: c_espdp_aw@@
+		@@END VARIABLE: c_espdp_dw@@
+		@@END VARIABLE: c_espdp_sw@@
+data output.taqvar_c;
+set taqvar_c;
+run;
+/*******************Part Two: use macro to measure abnormal spread**************************/
+%macro ab_spread(origin= , infile= ,date_evt=,  bgn_evt= , end_evt= ,date_ben=, bgn_ben= , end_ben=, outfile=, name=  );
+data caldates_evt;
+merge crsp.dsi(keep=date rename=(date=origin))
+      crsp.dsi(keep=date firstobs=%eval(&origin.-1) rename=(date=trdt_evt_l1))
+	  crsp.dsi(keep=date firstobs=%eval(&origin.) rename=(date=trdt_evt))
+	  crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn_evt.-1) rename=(date=trdt_bgn_evt_l1))
+      crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn_evt.) rename=(date=trdt_bgn_evt))
+      crsp.dsi(keep=date firstobs=%eval(&origin.+&end_evt.) rename=(date=trdt_end_evt));
+  format trdt_evt trdt_evt_l1 trdt_bgn_evt_l1 trdt_bgn_evt  trdt_end_evt mmddyy10.;
+  label trdt_evt="the trading day of event"
+        trdt_evt_l1="one trading day prior to the event trading day"
+		trdt_bgn_evt_l1="one trading day prior to the start trading day of var period relative to the event"
+        trdt_bgn_evt="start of var period relative to the event"
+	    trdt_end_evt="end of var period relative to the event";
+		index+1;
+  if nmiss(trdt_evt, trdt_evt_l1, trdt_bgn_evt_l1, trdt_bgn_evt,  trdt_end_evt)=0;
+run;
+proc sql;
+  create table evt_var as select a.*, b.trdt_evt, b.trdt_evt_l1, b.trdt_bgn_evt_l1, b.trdt_bgn_evt, b.trdt_end_evt
+  from &infile. as  a left join caldates_evt as b
+  on a.&date_evt.>b.trdt_evt_l1 and a.&date_evt.<=b.trdt_evt;
+quit;
+proc sql;
+	@@BEGIN VARIABLE: c_espdp_aw_end_evt@@
+	@@BEGIN VARIABLE: c_espdp_dw_end_evt@@
+	@@BEGIN VARIABLE: c_espdp_sw_end_evt@@
+  create table evt_var as select a.*, b.c_espdp_aw as c_espdp_aw_end_evt, b.c_espdp_dw as c_espdp_dw_end_evt
+                                   , b.c_espdp_sw as c_espdp_sw_end_evt, b.time as time_end_evt
+								 from evt_var as a left join taqvar_c as b
+                                 on a.permno=b.permno and  a.trdt_end_evt=b.date;
+								 quit;
+	@@END VARIABLE: c_espdp_aw_end_evt@@
+    @@END VARIABLE: c_espdp_dw_end_evt@@
+	@@END VARIABLE: c_espdp_sw_end_evt@@
+proc sql;
+	@@BEGIN VARIABLE: c_espdp_aw_bgn_evt_l1@@
+	@@BEGIN VARIABLE: c_espdp_dw_bgn_evt_l1@@
+    @@BEGIN VARIABLE: c_espdp_sw_bgn_evt_l1@@
+  create table evt_var as select a.*, b.c_espdp_aw as c_espdp_aw_bgn_evt_l1, b.c_espdp_dw as c_espdp_dw_bgn_evt_l1
+                                 , b.c_espdp_sw as c_espdp_sw_bgn_evt_l1, b.time as time_bgn_evt_l1
+								 from evt_var as a left join taqvar_c as b
+                                 on a.permno=b.permno and  a.trdt_bgn_evt_l1=b.date;
+								 quit;
+	@@END VARIABLE: c_espdp_aw_bgn_evt_l1@@
+    @@END VARIABLE: c_espdp_dw_bgn_evt_l1@@
+	@@END VARIABLE: c_espdp_sw_bgn_evt_l1@@
+data caldates_ben;
+merge crsp.dsi(keep=date rename=(date=origin))
+      crsp.dsi(keep=date firstobs=%eval(&origin.-1) rename=(date=trdt_ben_l1))
+	  crsp.dsi(keep=date firstobs=%eval(&origin.) rename=(date=trdt_ben))
+	  crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn_ben.-1) rename=(date=trdt_bgn_ben_l1))
+      crsp.dsi(keep=date firstobs=%eval(&origin.+&bgn_ben.) rename=(date=trdt_bgn_ben))
+      crsp.dsi(keep=date firstobs=%eval(&origin.+&end_ben.) rename=(date=trdt_end_ben));
+  format trdt_ben trdt_ben_l1 trdt_bgn_ben_l1 trdt_bgn_ben  trdt_end_ben mmddyy10.;
+  label trdt_ben="the trading date of benchmark"
+        trdt_ben_l1="one trading day prior to the benchmark trading date"
+		trdt_bgn_ben_l1="one trading day prior to the start trading day of bench period relative "
+        trdt_bgn_ben="start of bench period"
+	    trdt_end_ben="end of bench period";
+		index+1;
+  if nmiss(trdt_ben, trdt_ben_l1, trdt_bgn_ben_l1, trdt_bgn_ben,  trdt_end_ben)=0;
+run;
+proc sql;
+  create table evt_var as select a.*, b.trdt_ben, b.trdt_ben_l1, b.trdt_bgn_ben_l1, b.trdt_bgn_ben, b.trdt_end_ben
+  from evt_var as  a left join caldates_ben as b
+  on a.&date_ben.>b.trdt_ben_l1 and a.&date_ben.<=b.trdt_ben;
+quit;
+proc sql;
+	@@BEGIN VARIABLE: c_espdp_aw_end_ben@@
+	@@BEGIN VARIABLE: c_espdp_dw_end_ben@@
+	@@BEGIN VARIABLE: c_espdp_sw_end_ben@@
+  create table evt_var as select a.*, b.c_espdp_aw as c_espdp_aw_end_ben, b.c_espdp_dw as c_espdp_dw_end_ben
+                                   , b.c_espdp_sw as c_espdp_sw_end_ben, b.time as time_end_ben
+								 from evt_var as a left join taqvar_c as b
+                                 on a.permno=b.permno and  a.trdt_end_ben=b.date;
+								 quit;
+		@@END VARIABLE: c_espdp_aw_end_ben@@
+		@@END VARIABLE: c_espdp_dw_end_ben@@
+		@@END VARIABLE: c_espdp_sw_end_ben@@
+proc sql;
+	@@BEGIN VARIABLE: c_espdp_aw_bgn_ben_l1@@
+	@@BEGIN VARIABLE: c_espdp_dw_bgn_ben_l1@@
+    @@BEGIN VARIABLE: c_espdp_sw_bgn_ben_l1@@
+  create table evt_var as select a.*, b.c_espdp_aw as c_espdp_aw_bgn_ben_l1, b.c_espdp_dw as c_espdp_dw_bgn_ben_l1
+                                 , b.c_espdp_sw as c_espdp_sw_bgn_ben_l1, b.time as time_bgn_ben_l1
+								 from evt_var as a left join taqvar_c as b
+                                 on a.permno=b.permno and  a.trdt_bgn_ben_l1=b.date;
+								 quit;
+		@@END VARIABLE: c_espdp_aw_bgn_ben_l1@@
+		@@END VARIABLE: c_espdp_dw_bgn_ben_l1@@
+        @@END VARIABLE: c_espdp_sw_bgn_ben_l1@@
+data &outfile.;
+set evt_var;
+cnt_evt=time_end_evt-time_bgn_evt_l1;
+cnt_ben=time_end_ben-time_bgn_ben_l1;
+		@@BEGIN VARIABLE: ab_espdp_aw_d02_a1@@
+		@@BEGIN VARIABLE: ab_espdp_dw_d02_a1@@
+		@@BEGIN VARIABLE: ab_espdp_sw_d02_a1@@
+ab_espdp_aw_&name.=(c_espdp_aw_end_evt-c_espdp_aw_bgn_evt_l1)/cnt_evt-(c_espdp_aw_end_ben-c_espdp_aw_bgn_ben_l1)/cnt_ben;
+ab_espdp_dw_&name.=(c_espdp_dw_end_evt-c_espdp_dw_bgn_evt_l1)/cnt_evt-(c_espdp_dw_end_ben-c_espdp_dw_bgn_ben_l1)/cnt_ben;
+ab_espdp_sw_&name.=(c_espdp_sw_end_evt-c_espdp_sw_bgn_evt_l1)/cnt_evt-(c_espdp_sw_end_ben-c_espdp_sw_bgn_ben_l1)/cnt_ben;
+keep permno &date_evt. ab_espdp_aw_&name. ab_espdp_dw_&name. ab_espdp_sw_&name.;
+run;
+		@@END VARIABLE: ab_espdp_aw_d02_a1@@
+		@@END VARIABLE: ab_espdp_dw_d02_a1@@
+		@@END VARIABLE: ab_espdp_sw_d02_a1@@
+proc sort data=&outfile. nodupkey;
+by permno &date_evt.;
+run;
+%MEND;
+
+/*******************Part Two: use macro to measure abnormal spread**************************/
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=video_dt, bgn_ben=-55, end_ben=-6, outfile=espdp_d02_a1, name=d02_a1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=video_dt, bgn_ben=-55, end_ben=-11, outfile=espdp_d02_a2, name=d02_a2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=video_dt, bgn_ben=-50, end_ben=-6, outfile=espdp_d02_a3, name=d02_a3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=rdq, bgn_ben=-55, end_ben=-6, outfile=espdp_d02_b1, name=d02_b1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=rdq, bgn_ben=-55, end_ben=-11, outfile=espdp_d02_b2, name=d02_b2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=rdq, bgn_ben=-50, end_ben=-6, outfile=espdp_d02_b3, name=d02_b3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=video_dt, bgn_ben=-110, end_ben=-11, outfile=espdp_d02_c1, name=d02_c1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=video_dt, bgn_ben=-160, end_ben=-11, outfile=espdp_d02_c2, name=d02_c2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=video_dt, bgn_ben=-210, end_ben=-11, outfile=espdp_d02_c3, name=d02_c3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=rdq, bgn_ben=-110, end_ben=-11, outfile=espdp_d02_d1, name=d02_d1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=rdq, bgn_ben=-160, end_ben=-11, outfile=espdp_d02_d2, name=d02_d2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=2, date_ben=rdq, bgn_ben=-210, end_ben=-11, outfile=espdp_d02_d3, name=d02_d3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=video_dt, bgn_ben=-55, end_ben=-6, outfile=espdp_d04_a1, name=d04_a1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=video_dt, bgn_ben=-55, end_ben=-11, outfile=espdp_d04_a2, name=d04_a2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=video_dt, bgn_ben=-50, end_ben=-6, outfile=espdp_d04_a3, name=d04_a3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=rdq, bgn_ben=-55, end_ben=-6, outfile=espdp_d04_b1, name=d04_b1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=rdq, bgn_ben=-55, end_ben=-11, outfile=espdp_d04_b2, name=d04_b2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=rdq, bgn_ben=-50, end_ben=-6, outfile=espdp_d04_b3, name=d04_b3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=video_dt, bgn_ben=-110, end_ben=-11, outfile=espdp_d04_c1, name=d04_c1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=video_dt, bgn_ben=-160, end_ben=-11, outfile=espdp_d04_c2, name=d04_c2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=video_dt, bgn_ben=-210, end_ben=-11, outfile=espdp_d04_c3, name=d04_c3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=rdq, bgn_ben=-110, end_ben=-11, outfile=espdp_d04_d1, name=d04_d1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=rdq, bgn_ben=-160, end_ben=-11, outfile=espdp_d04_d2, name=d04_d2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt,  bgn_evt=0, end_evt=4, date_ben=rdq, bgn_ben=-210, end_ben=-11, outfile=espdp_d04_d3, name=d04_d3);
+
+data output.espdp;
+merge espdp_d02_a1 espdp_d02_a2 espdp_d02_a3 espdp_d02_b1 espdp_d02_b2 espdp_d02_b3 espdp_d02_c1 espdp_d02_c2 espdp_d02_c3 espdp_d02_d1 espdp_d02_d2 espdp_d02_d3
+      espdp_d04_a1 espdp_d04_a2 espdp_d04_a3 espdp_d04_b1 espdp_d04_b2 espdp_d04_b3 espdp_d04_c1 espdp_d04_c2 espdp_d04_c3 espdp_d04_d1 espdp_d04_d2 espdp_d04_d3;
+by permno video_dt;
+run;
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=video_dt_l1, bgn_ben=-55, end_ben=-6,  outfile=espdp_l1_d02_a1, name=l1_d02_a1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=video_dt_l1, bgn_ben=-55, end_ben=-11, outfile=espdp_l1_d02_a2, name=l1_d02_a2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=video_dt_l1, bgn_ben=-50, end_ben=-6,  outfile=espdp_l1_d02_a3, name=l1_d02_a3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=rdq_l1, bgn_ben=-55, end_ben=-6, outfile=espdp_l1_d02_b1, name=l1_d02_b1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=rdq_l1, bgn_ben=-55, end_ben=-11, outfile=espdp_l1_d02_b2, name=l1_d02_b2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=rdq_l1, bgn_ben=-50, end_ben=-6, outfile=espdp_l1_d02_b3, name=l1_d02_b3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=video_dt_l1, bgn_ben=-110, end_ben=-11, outfile=espdp_l1_d02_c1, name=l1_d02_c1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=video_dt_l1, bgn_ben=-160, end_ben=-11, outfile=espdp_l1_d02_c2, name=l1_d02_c2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=video_dt_l1, bgn_ben=-210, end_ben=-11, outfile=espdp_l1_d02_c3, name=l1_d02_c3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=rdq_l1, bgn_ben=-110, end_ben=-11, outfile=espdp_l1_d02_d1, name=l1_d02_d1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=rdq_l1, bgn_ben=-160, end_ben=-11, outfile=espdp_l1_d02_d2, name=l1_d02_d2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l1,  bgn_evt=0, end_evt=2, date_ben=rdq_l1, bgn_ben=-210, end_ben=-11, outfile=espdp_l1_d02_d3, name=l1_d02_d3);
+
+data output.espdp_l1;
+merge espdp_l1_d02_a1 espdp_l1_d02_a2 espdp_l1_d02_a3 espdp_l1_d02_b1 espdp_l1_d02_b2 espdp_l1_d02_b3 espdp_l1_d02_c1 espdp_l1_d02_c2 espdp_l1_d02_c3 espdp_l1_d02_d1 espdp_l1_d02_d2 espdp_l1_d02_d3;
+by permno video_dt_l1;
+run;
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=video_dt_l4, bgn_ben=-55, end_ben=-6,  outfile=espdp_l4_d02_a1, name=l4_d02_a1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=video_dt_l4, bgn_ben=-55, end_ben=-11, outfile=espdp_l4_d02_a2, name=l4_d02_a2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=video_dt_l4, bgn_ben=-50, end_ben=-6,  outfile=espdp_l4_d02_a3, name=l4_d02_a3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=rdq_l4, bgn_ben=-55, end_ben=-6, outfile=espdp_l4_d02_b1, name=l4_d02_b1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=rdq_l4, bgn_ben=-55, end_ben=-11, outfile=espdp_l4_d02_b2, name=l4_d02_b2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=rdq_l4, bgn_ben=-50, end_ben=-6, outfile=espdp_l4_d02_b3, name=l4_d02_b3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=video_dt_l4, bgn_ben=-110, end_ben=-11, outfile=espdp_l4_d02_c1, name=l4_d02_c1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=video_dt_l4, bgn_ben=-160, end_ben=-11, outfile=espdp_l4_d02_c2, name=l4_d02_c2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=video_dt_l4, bgn_ben=-210, end_ben=-11, outfile=espdp_l4_d02_c3, name=l4_d02_c3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=rdq_l4, bgn_ben=-110, end_ben=-11, outfile=espdp_l4_d02_d1, name=l4_d02_d1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=rdq_l4, bgn_ben=-160, end_ben=-11, outfile=espdp_l4_d02_d2, name=l4_d02_d2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_l4,  bgn_evt=0, end_evt=2, date_ben=rdq_l4, bgn_ben=-210, end_ben=-11, outfile=espdp_l4_d02_d3, name=l4_d02_d3);
+
+data output.espdp_l4;
+merge espdp_l4_d02_a1 espdp_l4_d02_a2 espdp_l4_d02_a3 espdp_l4_d02_b1 espdp_l4_d02_b2 espdp_l4_d02_b3 espdp_l4_d02_c1 espdp_l4_d02_c2 espdp_l4_d02_c3 espdp_l4_d02_d1 espdp_l4_d02_d2 espdp_l4_d02_d3;
+by permno video_dt_l4;
+run;
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=video_dt_d1, bgn_ben=-55, end_ben=-6,  outfile=espdp_d1_d02_a1, name=d1_d02_a1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=video_dt_d1, bgn_ben=-55, end_ben=-11, outfile=espdp_d1_d02_a2, name=d1_d02_a2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=video_dt_d1, bgn_ben=-50, end_ben=-6,  outfile=espdp_d1_d02_a3, name=d1_d02_a3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=rdq_d1, bgn_ben=-55, end_ben=-6, outfile=espdp_d1_d02_b1, name=d1_d02_b1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=rdq_d1, bgn_ben=-55, end_ben=-11, outfile=espdp_d1_d02_b2, name=d1_d02_b2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=rdq_d1, bgn_ben=-50, end_ben=-6, outfile=espdp_d1_d02_b3, name=d1_d02_b3);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=video_dt_d1, bgn_ben=-110, end_ben=-11, outfile=espdp_d1_d02_c1, name=d1_d02_c1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=video_dt_d1, bgn_ben=-160, end_ben=-11, outfile=espdp_d1_d02_c2, name=d1_d02_c2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=video_dt_d1, bgn_ben=-210, end_ben=-11, outfile=espdp_d1_d02_c3, name=d1_d02_c3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=rdq_d1, bgn_ben=-110, end_ben=-11, outfile=espdp_d1_d02_d1, name=d1_d02_d1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=rdq_d1, bgn_ben=-160, end_ben=-11, outfile=espdp_d1_d02_d2, name=d1_d02_d2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d1,  bgn_evt=0, end_evt=2, date_ben=rdq_d1, bgn_ben=-210, end_ben=-11, outfile=espdp_d1_d02_d3, name=d1_d02_d3);
+
+data output.espdp_d1;
+merge espdp_d1_d02_a1 espdp_d1_d02_a2 espdp_d1_d02_a3 espdp_d1_d02_b1 espdp_d1_d02_b2 espdp_d1_d02_b3 espdp_d1_d02_c1 espdp_d1_d02_c2 espdp_d1_d02_c3 espdp_d1_d02_d1 espdp_d1_d02_d2 espdp_d1_d02_d3;
+by permno video_dt_d1;
+run;
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=video_dt_d4, bgn_ben=-55, end_ben=-6,  outfile=espdp_d4_d02_a1, name=d4_d02_a1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=video_dt_d4, bgn_ben=-55, end_ben=-11, outfile=espdp_d4_d02_a2, name=d4_d02_a2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=video_dt_d4, bgn_ben=-50, end_ben=-6,  outfile=espdp_d4_d02_a3, name=d4_d02_a3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=rdq_d4, bgn_ben=-55, end_ben=-6, outfile=espdp_d4_d02_b1, name=d4_d02_b1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=rdq_d4, bgn_ben=-55, end_ben=-11, outfile=espdp_d4_d02_b2, name=d4_d02_b2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=rdq_d4, bgn_ben=-50, end_ben=-6, outfile=espdp_d4_d02_b3, name=d4_d02_b3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=video_dt_d4, bgn_ben=-110, end_ben=-11, outfile=espdp_d4_d02_c1, name=d4_d02_c1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=video_dt_d4, bgn_ben=-160, end_ben=-11, outfile=espdp_d4_d02_c2, name=d4_d02_c2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=video_dt_d4, bgn_ben=-210, end_ben=-11, outfile=espdp_d4_d02_c3, name=d4_d02_c3);
+
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=rdq_d4, bgn_ben=-110, end_ben=-11, outfile=espdp_d4_d02_d1, name=d4_d02_d1);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=rdq_d4, bgn_ben=-160, end_ben=-11, outfile=espdp_d4_d02_d2, name=d4_d02_d2);
+%ab_spread(origin=300, infile=input.event ,date_evt=video_dt_d4,  bgn_evt=0, end_evt=2, date_ben=rdq_d4, bgn_ben=-210, end_ben=-11, outfile=espdp_d4_d02_d3, name=d4_d02_d3);
+
+data output.espdp_d4;
+merge espdp_d4_d02_a1 espdp_d4_d02_a2 espdp_d4_d02_a3 espdp_d4_d02_b1 espdp_d4_d02_b2 espdp_d4_d02_b3 espdp_d4_d02_c1 espdp_d4_d02_c2 espdp_d4_d02_c3 espdp_d4_d02_d1 espdp_d4_d02_d2 espdp_d4_d02_d3;
+by permno video_dt_d4;
+run;

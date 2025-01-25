@@ -1,0 +1,69 @@
+此代码中变量皆已标过，所以不再列举
+
+libname ciq  "/wrds/capitaliq/sasdata/helper";
+libname output "/home/cityuhk/qintan";
+%let uni_begdt = 01JAN2000;
+%let uni_enddt = 31DEC2024;
+data wrds_cik;
+set ciq.wrds_cik;
+b_dt=mdy(1,1,1900);
+format b_dt mmddyy10.;
+e_dt=mdy(12,30,2021);
+format e_dt mmddyy10.;
+b_yr=year(STARTDATE);
+b_mth=month(STARTDATE);
+b_dr=day(STARTDATE);
+e_yr=year(ENDDATE);
+e_mth=month(ENDDATE);
+e_dr=day(ENDDATE);
+if missing(b_yr) then dt_b=b_dt;
+if missing(e_yr) then dt_e=e_dt;
+if b_yr^=. then dt_b=mdy(b_mth,b_dr,b_yr);
+if e_yr^=. then dt_e=mdy(e_mth,e_dr,e_yr);
+format dt_b mmddyy10.;
+format dt_e mmddyy10.;
+cik_id=cik*1;
+keep COMPANYID cik cik_id dt_b dt_e;
+run;
+data wrds_gvkey;
+set ciq.wrds_gvkey;
+b_dt=mdy(1,1,1900);
+format b_dt mmddyy10.;
+e_dt=mdy(12,31,2024);
+format e_dt mmddyy10.;
+b_yr=year(STARTDATE);
+b_mth=month(STARTDATE);
+b_dr=day(STARTDATE);
+e_yr=year(ENDDATE);
+e_mth=month(ENDDATE);
+e_dr=day(ENDDATE);
+if missing(b_yr) then dt_b=b_dt;
+if missing(e_yr) then dt_e=e_dt;
+if b_yr^=. then dt_b=mdy(b_mth,b_dr,b_yr);
+if e_yr^=. then dt_e=mdy(e_mth,e_dr,e_yr);
+format dt_b mmddyy10.;
+format dt_e mmddyy10.;
+keep COMPANYID gvkey dt_b dt_e;
+run;
+data s1;
+ set comp.funda;
+  where "&uni_begdt"d<=datadate<="&uni_enddt"d 
+  and indfmt='INDL' and datafmt='STD' and popsrc='D' and consol='C';
+    keep gvkey datadate fyear;
+run;
+proc sort data=s1 nodupkey;
+by gvkey fyear;
+run;
+proc sql;
+create table s1 as select a.*, b.COMPANYID
+from s1 as a left join wrds_gvkey as b
+on a.gvkey=b.gvkey and a.datadate>=b.dt_b adn a.datadate<=b.dt_e;
+quit;
+proc sql;
+create table s1 as select a.*, b.cik 
+from s1 as a left join wrds_cik as b
+on a.COMPANYID=b.COMPANYID and a.datadate>=b.dt_b adn a.datadate<=b.dt_e;
+quit;
+data output.base;
+set s1;
+run;

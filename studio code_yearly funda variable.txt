@@ -1,0 +1,679 @@
+/*
+这段代码主要用于从Compustat数据库中提取基本的财务数据，并进行初步处理，
+计算一系列常用的财务比率和指标。它提取了公司基本财务数据，
+并生成包含公司标识符，财务数据，以及根据这些财务数据计算出的财务比率，
+并与CRSP数据进行合并，最终将处理后的数据保存至指定库中，用于后续分析。
+*/
+
+/*
+变量综述
+表格一：已知变量
+| 变量名      | 含义                                         | 数据库来源     |
+|-------------|----------------------------------------------|----------------|
+| @@VARIABLE: gvkey@@gvkey         | Compustat公司标识符                         | comp.funda     |
+| @@VARIABLE: datadate@@datadate      | 数据日期                             | comp.funda     |
+| @@VARIABLE: fyear@@fyear          | 财务年度                             | comp.funda     |
+| @@VARIABLE: at@@at              | 总资产                                | comp.funda     |
+| @@VARIABLE: prcc@@prcc            |  股票价格                            | comp.funda     |
+| @@VARIABLE: csho@@csho             |  流通股数                               | comp.funda     |
+| @@VARIABLE: dlc@@dlc              |  流动负债                             | comp.funda     |
+| @@VARIABLE: dltt@@dltt             |  长期负债                             | comp.funda     |
+| @@VARIABLE: oibdp@@oibdp          |  营业利润（息税前）                        | comp.funda     |
+| @@VARIABLE: oiadp@@oiadp          |  营业利润（不含特殊项目）                | comp.funda     |
+| @@VARIABLE: sale@@sale             |  销售额                                | comp.funda     |
+| @@VARIABLE: xopr@@xopr            |  营业费用                                | comp.funda     |
+| @@VARIABLE: dp@@dp               |  折旧                                | comp.funda     |
+| @@VARIABLE: ni@@ni               |  净利润                                | comp.funda     |
+| @@VARIABLE: ib@@ib               |  税后利润                             | comp.funda     |
+| @@VARIABLE: seq@@seq              |  股东权益                             | comp.funda     |
+| @@VARIABLE: invt@@invt             |  存货                                | comp.funda     |
+| @@VARIABLE: rect@@rect             |  应收账款                             | comp.funda     |
+| @@VARIABLE: act@@act              |  流动资产                                | comp.funda     |
+| @@VARIABLE: ppent@@ppent            |  固定资产                               | comp.funda     |
+| @@VARIABLE: spi@@spi              |  特殊项目                               | comp.funda     |
+| @@VARIABLE: lt@@lt               |  总负债                                | comp.funda     |
+| @@VARIABLE: pstkr@@pstkr           |  优先股赎回价值                         | comp.funda     |
+| @@VARIABLE: pstk@@pstk            |  优先股账面价值                         | comp.funda     |
+| @@VARIABLE: txditc@@txditc          |  递延所得税                             | comp.funda     |
+| @@VARIABLE: lct@@lct              |  流动负债                                | comp.funda     |
+| @@VARIABLE: che@@che             |  现金                               | comp.funda     |
+| @@VARIABLE: txp@@txp              |  所得税费用                             | comp.funda     |
+| @@VARIABLE: xrd@@xrd              |  研发支出                               | comp.funda     |
+| @@VARIABLE: capx@@capx             |  资本支出                               | comp.funda     |
+| @@VARIABLE: sppe@@sppe             |  固定资产                               | comp.funda     |
+| @@VARIABLE: oancf@@oancf           |  经营活动现金流                           | comp.funda     |
+| @@VARIABLE: aco@@aco              |  其他流动资产                           | comp.funda     |
+| @@VARIABLE: ap@@ap               |  应付账款                             | comp.funda     |
+| @@VARIABLE: lco@@lco              |  其他长期负债                            | comp.funda     |
+| @@VARIABLE: ebitda@@ebitda          |  息税折旧摊销前利润                       | comp.funda     |
+| @@VARIABLE: ebit@@ebit             |  息税前利润                            | comp.funda     |
+| @@VARIABLE: ITCB@@ITCB            |  投资税收抵免                          | comp.funda     |
+| @@VARIABLE: TXDB@@TXDB            |  递延税款                              | comp.funda     |
+| @@VARIABLE: xad@@xad              |  广告支出                             | comp.funda     |
+ | @@VARIABLE: prcc_c@@prcc_c        |  公司股票的收盘价                           | comp.funda     |
+| @@VARIABLE: lpermno@@lpermno       |  CRSP 证券标识符                        | crsp.ccmxpf_lnkhist|
+| @@VARIABLE: lpermco@@lpermco       |  CRSP 公司标识符                        | crsp.ccmxpf_lnkhist|
+| @@VARIABLE: date@@date           |  CRSP数据日期                  | crsp.msf|
+| @@VARIABLE: prc@@prc              |  股票价格                    | crsp.msf|
+| @@VARIABLE: ret@@ret              |  股票收益率                    | crsp.msf|
+| @@VARIABLE: vol@@vol               |  交易量                    | crsp.msf|
+| @@VARIABLE: shrout@@shrout          |  流通股数                    | crsp.msf|
+| @@VARIABLE: cfacpr@@cfacpr          | 价格调整因子                                   | crsp.msf |
+| @@VARIABLE: cfacshr@@cfacshr         | 股份调整因子                                  | crsp.msf |
+表格二：计算得到的变量
+| 变量名               | 含义                                         | 公式                                                      |
+|----------------------|----------------------------------------------|-----------------------------------------------------------|
+| @@VARIABLE: pstk_new@@pstk_new        |  新的优先股价值                           | coalesce(PSTKR,PSTK)                                        |
+| @@VARIABLE: BE@@BE                |  调整后的股东权益                             | sum(SEQ, coalesce(TXDITC,sum(TXDB, ITCB)),-pstk_new)            |
+| @@VARIABLE: it@@it               |  调整后的营业利润                            | coalesce(ebit,oiadp,sale-xopr-dp)                         |
+| @@VARIABLE: da@@da             |  调整后的EBITDA                           | coalesce(ebitda,oibdp,sale-xopr)                          |
+| @@VARIABLE: be@@be                |  股东权益的另一种计算方式                           | sum(SEQ, TXDITC, -pstk_new)                         |
+| @@VARIABLE: wcvar@@wcvar            |  营运资本                                  | che+invt+rect+aco-ap-dlc-txp-lco                     |
+| @@VARIABLE: me_comp@@me_comp          |  公司总市值                              | prcc_c*csho                                        |
+| @@VARIABLE: datadate_l1@@datadate_l1   | 上一年度的数据日期 | lag(datadate)                                                    |
+| @@VARIABLE: at_l1@@at_l1           |  上一年度的总资产                          |  lag(at)                                               |
+| @@VARIABLE: seq_l1@@seq_l1         |  上一年度的股东权益                          | lag(seq)                                                  |
+| @@VARIABLE: dltt_l1@@dltt_l1         |  上一年度的长期负债                          | lag(dltt)                                                  |
+| @@VARIABLE: dlc_l1@@dlc_l1         |  上一年度的流动负债                          | lag(dlc)                                                  |
+| @@VARIABLE: ni_l1@@ni_l1         |  上一年度的净利润                          | lag(ni)                                                  |
+| @@VARIABLE: ppent_l1@@ppent_l1     |  上一年度的固定资产                        |  lag(ppent)                                               |
+| @@VARIABLE: act_l1@@act_l1          |  上一年度的流动资产                          | lag(act)                                                  |
+| @@VARIABLE: che_l1@@che_l1          |  上一年度的现金                          | lag(che)                                                  |
+| @@VARIABLE: lct_l1@@lct_l1          |  上一年度的流动负债                          | lag(lct)                                                  |
+| @@VARIABLE: txp_l1@@txp_l1        | 上一年度的所得税费用|  lag(txp)                                                 |
+| @@VARIABLE: be_l1@@be_l1       | 上一年度的股东权益的另一种计算方式| lag(be)                                                    |
+| @@VARIABLE: invt_l1@@invt_l1    |  上一年度的存货                          |  lag(invt)                                               |
+| @@VARIABLE: wcvar_l1@@wcvar_l1   |  上一年度的营运资本                          |  lag(wcvar)                                            |
+| @@VARIABLE: rect_l1@@rect_l1     |  上一年度的应收账款                          |  lag(rect)                                                 |
+|@@VARIABLE: sale_l1@@sale_l1    |  上一年度的销售额                         | lag(sale)                                                  |
+| @@VARIABLE: permno@@permno          |  CRSP 证券标识符                          |  来自crsp.ccmxpf_lnkhist                              |
+| @@VARIABLE: permco@@permco          |  CRSP 公司标识符                          |  来自crsp.ccmxpf_lnkhist                              |
+| @@VARIABLE: ME@@ME           |  股票市值                           |  abs(prc)*shrout/1000                             |
+| @@VARIABLE: me_crsp@@me_crsp        |  公司总市值（来自CRSP）                       |  sum(ME) group by permco,date                                          |
+| @@VARIABLE: ocfvar@@ocfvar       |  调整后的经营活动现金流                           |  coalesce(oancf,ib-sum((act-act_l1), -(che-che_l1), -(lct-lct_l1),(txp-txp_l1),-dp))                          |
+| @@VARIABLE: accrvar0@@accrvar0     |  应计项目(方法1)                          |  sum((act-act_l1), -(che-che_l1), -(lct-lct_l1),(txp-txp_l1),-dp)                          |
+| @@VARIABLE: accrvar1@@accrvar1     |  应计项目(方法2)                          | ib-ocfvar                                             |
+| @@VARIABLE: avgme_comp@@avgme_comp       |  平均公司总市值                              | (me_comp+me_comp)/2                                        |
+| @@VARIABLE: avgme_crsp@@avgme_crsp   |  平均公司总市值（来自CRSP）                       | (me_crsp+me_crsp)/2                                       |
+| @@VARIABLE: avgat@@avgat           |  平均总资产                               | (at+at_l1)/2                                             |
+| @@VARIABLE: avgbe@@avgbe           |  平均股东权益                             |  (be+be_l1)/2                                           |
+| @@VARIABLE: avgseq@@avgseq          |  平均股东权益                             |  (seq+seq_l1)/2                                             |
+| @@VARIABLE: avgact@@avgact          |  平均流动资产                               | (act+act_l1)/2                                             |
+| @@VARIABLE: avginvt@@avginvt         |  平均存货                                | (invt+invt_l1)/2                                             |
+| @@VARIABLE: avgrect@@avgrect         |  平均应收账款                             | (rect+rect_l1)/2                                             |
+| @@VARIABLE: avglct@@avglct          |  平均流动负债                               | (lct+lct_l1)/2                                             |
+| @@VARIABLE: avgppent@@avgppent        |  平均固定资产                               | (ppent+ppent_l1)/2                                             |
+| @@VARIABLE: avgwcvar@@avgwcvar        |  平均营运资本                               | (wcvar+wcvar_l1)/2                                           |
+| @@VARIABLE: avgche@@avgche          | 平均现金| (che+che_l1)/2                                                 |
+| @@VARIABLE: avgppe@@avgppe        | 平均固定资产净值| (ppent+ppent_l1)/2                                           |
+| @@VARIABLE: avgsale@@avgsale       | 平均销售额| (sale+sale_l1)/2                                                  |
+| @@VARIABLE: size_lnat@@size_lnat        |  总资产对数                              | log(at*10**6)                                       |
+| @@VARIABLE: size_comp@@size_comp        |  公司总市值对数                              | log(me_comp*10**6)                                       |
+| @@VARIABLE: size_crsp@@size_crsp        |  公司总市值对数（来自CRSP）                    | log(me_crsp*10**6)                                       |
+| @@VARIABLE: bm1@@bm1               |  账面市值比(seq/me_comp)                       | seq/me_comp                                              |
+| @@VARIABLE: bm2@@bm2               |  账面市值比(be/me_comp)                       | be/me_comp                                               |
+| @@VARIABLE: bm3@@bm3               |  账面市值比(seq/me_crsp)                       | seq/me_crsp                                              |
+| @@VARIABLE: bm4@@bm4               |  账面市值比(be/me_crsp)                       | be/me_crsp                                               |
+| @@VARIABLE: mb1@@mb1               |  市值账面比(me_comp/seq)                       | 1/bm1                                               |
+| @@VARIABLE: mb2@@mb2               |  市值账面比(me_comp/be)                       | 1/bm2                                               |
+| @@VARIABLE: mb3@@mb3               |  市值账面比(me_crsp/seq)                       | 1/bm3                                               |
+| @@VARIABLE: mb4@@mb4               |  市值账面比(me_crsp/be)                       | 1/bm4                                               |
+| @@VARIABLE: lev1@@lev1              |  杠杆率1                                | sum(dlc, dltt)/at                                       |
+| @@VARIABLE: lev2@@lev2              |  杠杆率2                                | dltt/at                                                |
+| @@VARIABLE: tbq1_se_comp@@tbq1_se_comp  |  托宾Q值1 (基于市值和股东权益)                             | (me_comp+at-seq)/at                                   |
+| @@VARIABLE: tbq2_be_comp@@tbq2_be_comp  |  托宾Q值2(基于市值和账面价值)                             | (me_comp+at-be)/at                                     |
+| @@VARIABLE: tbq3_se_crsp@@tbq3_se_crsp  |  托宾Q值3(基于市值和股东权益)                           | (me_crsp+at-seq)/at                                   |
+| @@VARIABLE: tbq4_be_crsp@@tbq4_be_crsp  |  托宾Q值4 (基于市值和账面价值)                           | (me_crsp+at-be)/at                                     |
+| @@VARIABLE: roa1_ibend@@roa1_ibend      |  资产收益率1(ib/at)                         | ib/at                                                  |
+| @@VARIABLE: roa2_niend@@roa2_niend      |  资产收益率2(ni/at)                         | ni/at                                                  |
+| @@VARIABLE: roa3_itend@@roa3_itend      |  资产收益率3(ebit/at)                       | ebit/at                                                |
+| @@VARIABLE: roa4_daend@@roa4_daend      |  资产收益率4(ebitda/at)                      | ebitda/at                                              |
+| @@VARIABLE: roa5_ibavg@@roa5_ibavg      |  平均资产收益率1(ib/avgat)                         | ib/avgat                                                |
+| @@VARIABLE: roa6_niavg@@roa6_niavg      |  平均资产收益率2(ni/avgat)                         | ni/avgat                                                |
+| @@VARIABLE: roa7_itavg@@roa7_itavg      |  平均资产收益率3(ebit/avgat)                        | ebit/avgat                                              |
+| @@VARIABLE: roa8_daavg@@roa8_daavg      |  平均资产收益率4(ebitda/avgat)                      | ebitda/avgat                                              |
+| @@VARIABLE: roe1_ibendse@@roe1_ibendse    |  股东权益收益率1(ib/seq)                         | ib/seq                                                 |
+| @@VARIABLE: roe2_ibendbe@@roe2_ibendbe    |  股东权益收益率2(ib/be)                         | ib/be                                                 |
+| @@VARIABLE: roe3_niendse@@roe3_niendse    |  股东权益收益率3(ni/seq)                         | ni/seq                                                 |
+| @@VARIABLE: roe4_niendbe@@roe4_niendbe    |  股东权益收益率4(ni/be)                         | ni/be                                                 |
+| @@VARIABLE: roe5_ibavgse@@roe5_ibavgse    |  平均股东权益收益率1(ib/avgseq)                       | ib/avgseq                                               |
+| @@VARIABLE: roe6_ibavgbe@@roe6_ibavgbe    |  平均股东权益收益率2(ib/avgbe)                       | ib/avgbe                                               |
+| @@VARIABLE: roe7_niavgse@@roe7_niavgse    |  平均股东权益收益率3(ni/avgseq)                      | ni/avgseq                                              |
+| @@VARIABLE: roe8_niavgbe@@roe8_niavgbe    |  平均股东权益收益率4(ni/avgbe)                       | ni/avgbe                                               |
+| @@VARIABLE: roce1_ibend@@roce1_ibend      |  资本收益率1(ib/(dltt+dlc+seq))                     | ib/(dltt+dlc+seq)                                      |
+| @@VARIABLE: roce3_niend@@roce3_niend      |  资本收益率2(ni/(dltt+dlc+seq))                     | ni/(dltt+dlc+seq)                                      |
+| @@VARIABLE: roce3_itend@@roce3_itend      |  资本收益率3(it/(dltt+dlc+seq))                     | it/(dltt+dlc+seq)                                    |
+| @@VARIABLE: roce4_daend@@roce4_daend      |  资本收益率4(da/(dltt+dlc+seq))                     | da/(dltt+dlc+seq)                                      |
+| @@VARIABLE: roce5_ibavg@@roce5_ibavg      |  平均资本收益率1(ib/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2))  | ib/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2)              |
+| @@VARIABLE: roce6_niavg@@roce6_niavg      |  平均资本收益率2(ni/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2))  | ni/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2)            |
+| @@VARIABLE: roce7_itavg@@roce7_itavg      |  平均资本收益率3(it/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2))  | it/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2)             |
+| @@VARIABLE: roce8_daavg@@roce8_daavg      |  平均资本收益率4(da/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2))  | da/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2)             |
+| @@VARIABLE: loss1_ib@@loss1_ib      |  是否ib为负                                 | if roa1_ibend<0 then 1 else 0                                   |
+| @@VARIABLE: loss2_ni@@loss2_ni      |  是否ni为负                                 | if roa2_niend<0 then 1 else 0                                  |
+| @@VARIABLE: loss3_it@@loss3_it      |  是否it为负                                | if roa3_itend<0 then 1 else 0                                  |
+| @@VARIABLE: loss4_da@@loss4_da      |  是否da为负                                | if roa4_daend<0 then 1 else 0                                  |
+| @@VARIABLE: capx_adj@@capx_adj         |  调整后的资本支出                         | sum(capx,-sppe)                                    |
+| @@VARIABLE: capex1@@capex1           |  资本支出比率1                              | capx/sale                                                |
+| @@VARIABLE: capex2@@capex2           |  资本支出比率2                              | capx/at                                                |
+| @@VARIABLE: capex3@@capex3           |  资本支出比率3                              | capx/avgat                                                |
+| @@VARIABLE: capex4@@capex4           |  资本支出比率4                              | capx/ppent                                               |
+| @@VARIABLE: capex5@@capex5           |  资本支出比率5                              | capx/avgppe                                                |
+| @@VARIABLE: capex6@@capex6           |  调整后的资本支出比率1                      | capx_adj/sale                                          |
+| @@VARIABLE: capex7@@capex7           |  调整后的资本支出比率2                      | capx_adj/at                                             |
+| @@VARIABLE: capex8@@capex8           |  调整后的资本支出比率3                      | capx_adj/avgat                                           |
+| @@VARIABLE: capex9@@capex9           |  调整后的资本支出比率4                      | capx_adj/ppent                                            |
+| @@VARIABLE: capex10@@capex10          |  调整后的资本支出比率5                     | capx_adj/avgppe                                           |
+| @@VARIABLE: rde1@@rde1               |  研发支出比率1                              | xrd/sale                                                 |
+| @@VARIABLE: rde2@@rde2               |  研发支出比率2                              | xrd/at                                                  |
+| @@VARIABLE: rde3@@rde3               |  研发支出比率3                              | xrd/avgat                                              |
+| @@VARIABLE: ocf1_at@@ocf1_at         |  经营活动现金流/总资产                    | ocfvar/at                                               |
+| @@VARIABLE: ocf2_comp@@ocf2_comp       |  经营活动现金流/公司总市值                  | ocfvar/me_comp                                          |
+| @@VARIABLE: ocf3_crsp@@ocf3_crsp       |  经营活动现金流/公司总市值（来自CRSP）           | ocfvar/me_crsp                                          |
+| @@VARIABLE: ocf4_avgat@@ocf4_avgat      |  经营活动现金流/平均总资产                  | ocfvar/avgat                                             |
+| @@VARIABLE: ocf5_avgcomp@@ocf5_avgcomp    |  经营活动现金流/平均公司总市值                 | ocfvar/avgme_comp                                       |
+| @@VARIABLE: ocf6_avgcrsp@@ocf6_avgcrsp    |  经营活动现金流/平均公司总市值（来自CRSP）          | ocfvar/avgme_crsp                                       |
+| @@VARIABLE: sale1_at@@sale1_at         |  销售额/总资产                            | sale/at                                                  |
+| @@VARIABLE: sale2_comp@@sale2_comp       |  销售额/公司总市值                          | sale/me_comp                                             |
+| @@VARIABLE: sale3_crps@@sale3_crps       |  销售额/公司总市值（来自CRSP）                    | sale/me_crsp                                           |
+| @@VARIABLE: sale4_avgat@@sale4_avgat      |  销售额/平均总资产                          | sale/avgat                                             |
+| @@VARIABLE: sale5_avgcomp@@sale5_avgcomp    |  销售额/平均公司总市值                         | sale/avgme_comp                                        |
+| @@VARIABLE: sale6_avgcrps@@sale6_avgcrps    |  销售额/平均公司总市值（来自CRSP）                 | sale/avgme_crsp                                        |
+| @@VARIABLE: salesgth@@salesgth         |  销售增长率                               | (sale-sale_l1)/sale_l1                                |
+| @@VARIABLE: accr1_end@@accr1_end      |  应计项目1/总资产                          | accrvar0/at                                               |
+| @@VARIABLE: accr2_avg@@accr2_avg      |  应计项目1/平均总资产                        | accrvar0/avgat                                             |
+| @@VARIABLE: accr3_end@@accr3_end      |  应计项目2/总资产                          | accrvar1/at                                                |
+| @@VARIABLE: accr4_avg@@accr4_avg      |  应计项目2/平均总资产                        | accrvar1/avgat                                               |
+| @@VARIABLE: wc@@wc               |  营运资本/总资产                              | wcvar/at                                               |
+| @@VARIABLE: cash@@cash             |  现金/总资产                               | che/at                                                 |
+| @@VARIABLE: ppe_at@@ppe_at           |  固定资产/总资产                            | ppent/at                                               |
+| @@VARIABLE: ppegth@@ppegth          |  固定资产增长率                            | (ppent-ppent_l1)/ppent_l1                                |
+| @@VARIABLE: xad1_at@@xad1_at        |  广告支出/总资产                           | xad/at                                                 |
+| @@VARIABLE: xad2_avgat@@xad2_avgat        |  广告支出/平均总资产                          | xad/avgat                                               |
+| @@VARIABLE: xad3_sale@@xad3_sale       |  广告支出/销售额                           | xad/sale                                               |
+*/
+/*
+时间范围限制
+| 变量名     | 开始时间   | 结束时间   |
+|------------|------------|------------|
+| datadate   | 01JAN1990  | 31DEC2020  |
+| date       | 01JAN1990  | 31DEC2020  |
+*/
+libname output "/home/yale/yiliwu/trial/outputs";
+%let uni_begdt = 01JAN1990;
+%let uni_enddt = 31DEC2020;
+/*********************Part Zero:Extract Basic Financial Data from Compustat and Conduct Basic Process*********************/
+@@BEGIN VARIABLE: comp@@
+data comp;
+ set comp.funda;
+  where "&uni_begdt"d<= @@BEGIN VARIABLE: datadate@@datadate@@END VARIABLE: datadate@@<="&uni_enddt"d 
+  and indfmt='INDL' and datafmt='STD' and popsrc='D' and consol='C';
+if missing(@@BEGIN VARIABLE: gvkey@@gvkey@@END VARIABLE: gvkey@@) then delete;
+if missing(@@BEGIN VARIABLE: fyear@@fyear@@END VARIABLE: fyear@@) then delete;
+if missing(@@BEGIN VARIABLE: at@@at@@END VARIABLE: at@@) then delete;
+if at<=0 then delete;
+/****key notes:
+1)one firm-year may have two revenue observations, one is sale and the other is sale plus operating sale other
+2) minor firm-year(<1%) have revenue without sales
+3) If sale has observations, then revenue has observation
+***/
+keep gvkey fyear datadate at @@BEGIN VARIABLE: prcc@@prcc@@END VARIABLE: prcc@@ @@BEGIN VARIABLE: csho@@csho@@END VARIABLE: csho@@ @@BEGIN VARIABLE: dlc@@dlc@@END VARIABLE: dlc@@ @@BEGIN VARIABLE: dltt@@dltt@@END VARIABLE: dltt@@ @@BEGIN VARIABLE: oibdp@@oibdp@@END VARIABLE: oibdp@@ @@BEGIN VARIABLE: oiadp@@oiadp@@END VARIABLE: oiadp@@ @@BEGIN VARIABLE: sale@@sale@@END VARIABLE: sale@@ @@BEGIN VARIABLE: xopr@@xopr@@END VARIABLE: xopr@@ @@BEGIN VARIABLE: dp@@dp@@END VARIABLE: dp@@ @@BEGIN VARIABLE: ni@@ni@@END VARIABLE: ni@@ @@BEGIN VARIABLE: ib@@ib@@END VARIABLE: ib@@ @@BEGIN VARIABLE: seq@@seq@@END VARIABLE: seq@@ @@BEGIN VARIABLE: invt@@invt@@END VARIABLE: invt@@ @@BEGIN VARIABLE: rect@@rect@@END VARIABLE: rect@@ @@BEGIN VARIABLE: act@@act@@END VARIABLE: act@@ @@BEGIN VARIABLE: ppent@@ppent@@END VARIABLE: ppent@@ @@BEGIN VARIABLE: spi@@spi@@END VARIABLE: spi@@ @@BEGIN VARIABLE: lt@@lt@@END VARIABLE: lt@@ @@BEGIN VARIABLE: re@@re@@END VARIABLE: re@@
+@@BEGIN VARIABLE: pstkr@@pstkr@@END VARIABLE: pstkr@@ @@BEGIN VARIABLE: pstk@@pstk@@END VARIABLE: pstk@@ @@BEGIN VARIABLE: txditc@@txditc@@END VARIABLE: txditc@@ @@BEGIN VARIABLE: lct@@lct@@END VARIABLE: lct@@ @@BEGIN VARIABLE: che@@che@@END VARIABLE: che@@ @@BEGIN VARIABLE: txp@@txp@@END VARIABLE: txp@@  @@BEGIN VARIABLE: xrd@@xrd@@END VARIABLE: xrd@@ @@BEGIN VARIABLE: capx@@capx@@END VARIABLE: capx@@ @@BEGIN VARIABLE: sppe@@sppe@@END VARIABLE: sppe@@ @@BEGIN VARIABLE: oancf@@oancf@@END VARIABLE: oancf@@  @@BEGIN VARIABLE: aco@@aco@@END VARIABLE: aco@@ @@BEGIN VARIABLE: ap@@ap@@END VARIABLE: ap@@ @@BEGIN VARIABLE: lco@@lco@@END VARIABLE: lco@@ @@BEGIN VARIABLE: ebitda@@ebitda@@END VARIABLE: ebitda@@ @@BEGIN VARIABLE: ebit@@ebit@@END VARIABLE: ebit@@ @@BEGIN VARIABLE: ITCB@@ITCB@@END VARIABLE: ITCB@@ @@BEGIN VARIABLE: TXDB@@TXDB@@END VARIABLE: TXDB@@ @@BEGIN VARIABLE: xad@@xad@@END VARIABLE: xad@@ @@BEGIN VARIABLE: prcc_c@@prcc_c@@END VARIABLE: prcc_c@@;
+run;
+@@END VARIABLE: comp@@
+proc sort data=comp nodupkey;
+by gvkey datadate;
+run;
+proc sort data=comp nodupkey;
+by gvkey fyear;
+run;
+@@BEGIN VARIABLE: pstk_new@@
+@@BEGIN VARIABLE: BE@@
+@@BEGIN VARIABLE: it@@
+@@BEGIN VARIABLE: da@@
+@@BEGIN VARIABLE: be@@
+@@BEGIN VARIABLE: wcvar@@
+@@BEGIN VARIABLE: me_comp@@
+data comp;
+set comp;
+pstk_new=coalesce(PSTKR,PSTK);
+if SEQ>0 then BE = sum(SEQ, coalesce(TXDITC,sum(TXDB, ITCB)),-pstk_new);
+if BE<=0 then BE=.;
+it=coalesce(ebit,oiadp,sale-xopr-dp);
+da=coalesce(ebitda,oibdp,sale-xopr);
+be=sum(SEQ, TXDITC, -pstk_new);
+wcvar=che+invt+rect+aco-ap-dlc-txp-lco;
+if invt=. then invt=0;
+if rect=. then rect=0;
+if act=. then act=0;
+if lct=. then lct=0;
+if xrd=. then xrd=0;
+if capx=. then capx=0;
+if ppent<0 then ppent=.;
+if xad=. then xad=0;
+if prcc_c>0 and csho>0 then me_comp=prcc_c*csho;
+run;
+@@END VARIABLE: pstk_new@@
+@@END VARIABLE: BE@@
+@@END VARIABLE: it@@
+@@END VARIABLE: da@@
+@@END VARIABLE: be@@
+@@END VARIABLE: wcvar@@
+@@END VARIABLE: me_comp@@
+@@BEGIN VARIABLE: datadate_l1@@
+@@BEGIN VARIABLE: at_l1@@
+@@BEGIN VARIABLE: seq_l1@@
+@@BEGIN VARIABLE: dltt_l1@@
+@@BEGIN VARIABLE: dlc_l1@@
+@@BEGIN VARIABLE: ni_l1@@
+@@BEGIN VARIABLE: ppent_l1@@
+@@BEGIN VARIABLE: act_l1@@
+@@BEGIN VARIABLE: che_l1@@
+@@BEGIN VARIABLE: lct_l1@@
+@@BEGIN VARIABLE: txp_l1@@
+@@BEGIN VARIABLE: be_l1@@
+@@BEGIN VARIABLE: invt_l1@@
+@@BEGIN VARIABLE: wcvar_l1@@
+@@BEGIN VARIABLE: rect_l1@@
+@@BEGIN VARIABLE: sale_l1@@
+proc sql;
+create table comp as select unique a.*, b.datadate as datadate_l1, b.at as at_l1, b.seq as seq_l1, b.dltt as dltt_l1
+                             , b.dlc as dlc_l1, b.ni as ni_l1, b.ppent as ppent_l1
+                             , b.act as act_l1, b.che as che_l1, b.lct as lct_l1, b.dlc as dlc_l1, b.txp as txp_l1, b.at as at_l1
+                             , b.be as be_l1, b.invt as invt_l1, b.wcvar as wcvar_l1, b.seq as seq_l1
+                             , b.ppent as ppent_l1, b.rect as rect_l1, b.sale as sale_l1
+from comp as a left join comp as b
+on a.gvkey=b.gvkey and a.fyear=b.fyear+1;
+quit;
+@@END VARIABLE: datadate_l1@@
+@@END VARIABLE: at_l1@@
+@@END VARIABLE: seq_l1@@
+@@END VARIABLE: dltt_l1@@
+@@END VARIABLE: dlc_l1@@
+@@END VARIABLE: ni_l1@@
+@@END VARIABLE: ppent_l1@@
+@@END VARIABLE: act_l1@@
+@@END VARIABLE: che_l1@@
+@@END VARIABLE: lct_l1@@
+@@END VARIABLE: txp_l1@@
+@@END VARIABLE: be_l1@@
+@@END VARIABLE: invt_l1@@
+@@END VARIABLE: wcvar_l1@@
+@@END VARIABLE: rect_l1@@
+@@END VARIABLE: sale_l1@@
+/*********************Part One: merge with permno,permco, exchg_comp, exchg_crsp, and sich***************************************/
+@@BEGIN VARIABLE: comp_crsp@@
+@@BEGIN VARIABLE: permno@@
+@@BEGIN VARIABLE: permco@@
+proc sql;
+  create table comp_crsp
+  as select a.*, b.lpermno as permno, b.lpermco as permco
+  from comp as a, crsp.ccmxpf_lnkhist as b
+  where a.gvkey=b.gvkey and b.linkprim in ('P', 'C') and
+  b.LINKTYPE in ('LU', 'LC') and
+ (b.LINKDT <= a.datadate or missing(b.LINKDT)) and (a.datadate <= b.LINKENDDT or missing(b.LINKENDDT))
+ order by gvkey, datadate;
+quit;
+@@END VARIABLE: comp_crsp@@
+@@END VARIABLE: permno@@
+@@END VARIABLE: permco@@
+data comp_crsp;
+set comp_crsp;
+if missing(permno) then delete;
+run;
+@@BEGIN VARIABLE: crsp_m@@
+@@BEGIN VARIABLE: date@@
+@@BEGIN VARIABLE: prc@@
+@@BEGIN VARIABLE: ret@@
+@@BEGIN VARIABLE: vol@@
+@@BEGIN VARIABLE: shrout@@
+@@BEGIN VARIABLE: cfacpr@@
+@@BEGIN VARIABLE: cfacshr@@
+data crsp_m;set crsp.msf;
+where "&uni_begdt"d<=date<="&uni_enddt"d ;
+keep permno permco date prc ret vol shrout cfacpr cfacshr;
+run;
+@@END VARIABLE: crsp_m@@
+@@END VARIABLE: date@@
+@@END VARIABLE: prc@@
+@@END VARIABLE: ret@@
+@@END VARIABLE: vol@@
+@@END VARIABLE: shrout@@
+@@END VARIABLE: cfacpr@@
+@@END VARIABLE: cfacshr@@
+@@BEGIN VARIABLE: ME@@
+data crsp1;
+set crsp_m;
+DATE = INTNX("MONTH",date,0,"E");
+ME = abs(prc)*shrout/1000;
+label ME = "Issue-Level Market Capitalization, x$1m";
+keep permno permco date me;
+run;
+@@END VARIABLE: ME@@
+@@BEGIN VARIABLE: me_crsp@@
+proc sql  undo_policy=none;
+create table crsp1
+as select *, sum(me) as me_crsp "Company-Level Market Cap, $million" format dollar12.3
+from crsp1
+group by permco,date
+order by permno,date;
+quit;
+@@END VARIABLE: me_crsp@@
+proc sql;
+create table base as select a.*, b.me_crsp
+from comp_crsp as a left join crsp1 as b
+on a.permno=b.permno and a.datadate=b.date;
+quit;
+@@BEGIN VARIABLE: ocfvar@@
+@@BEGIN VARIABLE: accrvar0@@
+@@BEGIN VARIABLE: accrvar1@@
+@@BEGIN VARIABLE: avgme_comp@@
+@@BEGIN VARIABLE: avgme_crsp@@
+@@BEGIN VARIABLE: avgat@@
+@@BEGIN VARIABLE: avgbe@@
+@@BEGIN VARIABLE: avgseq@@
+@@BEGIN VARIABLE: avgact@@
+@@BEGIN VARIABLE: avginvt@@
+@@BEGIN VARIABLE: avgrect@@
+@@BEGIN VARIABLE: avglct@@
+@@BEGIN VARIABLE: avgppent@@
+@@BEGIN VARIABLE: avgwcvar@@
+@@BEGIN VARIABLE: avgche@@
+@@BEGIN VARIABLE: avgppe@@
+@@BEGIN VARIABLE: avgsale@@
+@@BEGIN VARIABLE: size_lnat@@
+@@BEGIN VARIABLE: size_comp@@
+@@BEGIN VARIABLE: size_crsp@@
+@@BEGIN VARIABLE: bm1@@
+@@BEGIN VARIABLE: bm2@@
+@@BEGIN VARIABLE: bm3@@
+@@BEGIN VARIABLE: bm4@@
+@@BEGIN VARIABLE: mb1@@
+@@BEGIN VARIABLE: mb2@@
+@@BEGIN VARIABLE: mb3@@
+@@BEGIN VARIABLE: mb4@@
+@@BEGIN VARIABLE: lev1@@
+@@BEGIN VARIABLE: lev2@@
+@@BEGIN VARIABLE: tbq1_se_comp@@
+@@BEGIN VARIABLE: tbq2_be_comp@@
+@@BEGIN VARIABLE: tbq3_se_crsp@@
+@@BEGIN VARIABLE: tbq4_be_crsp@@
+@@BEGIN VARIABLE: roa1_ibend@@
+@@BEGIN VARIABLE: roa2_niend@@
+@@BEGIN VARIABLE: roa3_itend@@
+@@BEGIN VARIABLE: roa4_daend@@
+@@BEGIN VARIABLE: roa5_ibavg@@
+@@BEGIN VARIABLE: roa6_niavg@@
+@@BEGIN VARIABLE: roa7_itavg@@
+@@BEGIN VARIABLE: roa8_daavg@@
+@@BEGIN VARIABLE: roe1_ibendse@@
+@@BEGIN VARIABLE: roe2_ibendbe@@
+@@BEGIN VARIABLE: roe3_niendse@@
+@@BEGIN VARIABLE: roe4_niendbe@@
+@@BEGIN VARIABLE: roe5_ibavgse@@
+@@BEGIN VARIABLE: roe6_ibavgbe@@
+@@BEGIN VARIABLE: roe7_niavgse@@
+@@BEGIN VARIABLE: roe8_niavgbe@@
+@@BEGIN VARIABLE: roce1_ibend@@
+@@BEGIN VARIABLE: roce3_niend@@
+@@BEGIN VARIABLE: roce3_itend@@
+@@BEGIN VARIABLE: roce4_daend@@
+@@BEGIN VARIABLE: roce5_ibavg@@
+@@BEGIN VARIABLE: roce6_niavg@@
+@@BEGIN VARIABLE: roce7_itavg@@
+@@BEGIN VARIABLE: roce8_daavg@@
+@@BEGIN VARIABLE: loss1_ib@@
+@@BEGIN VARIABLE: loss2_ni@@
+@@BEGIN VARIABLE: loss3_it@@
+@@BEGIN VARIABLE: loss4_da@@
+@@BEGIN VARIABLE: capx_adj@@
+@@BEGIN VARIABLE: capex1@@
+@@BEGIN VARIABLE: capex2@@
+@@BEGIN VARIABLE: capex3@@
+@@BEGIN VARIABLE: capex4@@
+@@BEGIN VARIABLE: capex5@@
+@@BEGIN VARIABLE: capex6@@
+@@BEGIN VARIABLE: capex7@@
+@@BEGIN VARIABLE: capex8@@
+@@BEGIN VARIABLE: capex9@@
+@@BEGIN VARIABLE: capex10@@
+@@BEGIN VARIABLE: rde1@@
+@@BEGIN VARIABLE: rde2@@
+@@BEGIN VARIABLE: rde3@@
+@@BEGIN VARIABLE: ocf1_at@@
+@@BEGIN VARIABLE: ocf2_comp@@
+@@BEGIN VARIABLE: ocf3_crsp@@
+@@BEGIN VARIABLE: ocf4_avgat@@
+@@BEGIN VARIABLE: ocf5_avgcomp@@
+@@BEGIN VARIABLE: ocf6_avgcrsp@@
+@@BEGIN VARIABLE: sale1_at@@
+@@BEGIN VARIABLE: sale2_comp@@
+@@BEGIN VARIABLE: sale3_crps@@
+@@BEGIN VARIABLE: sale4_avgat@@
+@@BEGIN VARIABLE: sale5_avgcomp@@
+@@BEGIN VARIABLE: sale6_avgcrps@@
+@@BEGIN VARIABLE: salesgth@@
+@@BEGIN VARIABLE: accr1_end@@
+@@BEGIN VARIABLE: accr2_avg@@
+@@BEGIN VARIABLE: accr3_end@@
+@@BEGIN VARIABLE: accr4_avg@@
+@@BEGIN VARIABLE: wc@@
+@@BEGIN VARIABLE: cash@@
+@@BEGIN VARIABLE: ppe_at@@
+@@BEGIN VARIABLE: ppegth@@
+@@BEGIN VARIABLE: xad1_at@@
+@@BEGIN VARIABLE: xad2_avgat@@
+@@BEGIN VARIABLE: xad3_sale@@
+data base;
+set base;
+ocfvar=coalesce(oancf,ib-sum((act-act_l1), -(che-che_l1), -(lct-lct_l1),(txp-txp_l1),-dp));
+accrvar0=sum((act-act_l1), -(che-che_l1), -(lct-lct_l1),(txp-txp_l1),-dp);
+accrvar1=ib-ocfvar;
+avgme_comp=(me_comp+me_comp)/2;
+avgme_crsp=(me_crsp+me_crsp)/2;
+avgat=(at+at_l1)/2;
+avgbe=(be+be_l1)/2;
+avgseq=(seq+seq_l1)/2;
+avgact=(act+act_l1)/2;
+avginvt=(invt+invt_l1)/2;
+avgrect=(rect+rect_l1)/2;
+avglct=(lct+lct_l1)/2;
+avgppent=(ppent+ppent_l1)/2;
+avgwcvar=(wcvar+wcvar_l1)/2;
+avgche=(che+che_l1)/2;
+avgppe=(ppent+ppent_l1)/2;
+avgsale=(sale+sale_l1)/2;
+if at>0 then size_lnat=log(at*10**6);
+if me_comp>0 then size_comp=log(me_comp*10**6);
+if me_crsp>0 then size_crsp=log(me_crsp*10**6);
+if me_comp>0 then bm1=seq/me_comp;
+if me_comp>0 then bm2=be/me_comp;
+if me_crsp>0 then bm3=seq/me_crsp;
+if me_crsp>0 then bm4=be/me_crsp;
+if bm1>0 then mb1=1/bm1;
+if bm2>0 then mb2=1/bm2;
+if bm3>0 then mb3=1/bm3;
+if bm4>0 then mb4=1/bm4;
+if at>0 then lev1=sum(dlc, dltt)/at;
+if at>0 then lev2=dltt/at;
+if at>0 then tbq1_se_comp=(me_comp+at-seq)/at;
+if at>0 then tbq2_be_comp=(me_comp+at-be)/at;
+if at>0 then tbq3_se_crsp=(me_crsp+at-seq)/at;
+if at>0 then tbq4_be_crsp=(me_crsp+at-be)/at;
+if at>0 then roa1_ibend=ib/at;
+if at>0 then roa2_niend=ni/at;
+if at>0 then roa3_itend=ebit/at;
+if at>0 then roa4_daend=ebitda/at;
+if avgat>0 then roa5_ibavg=ib/avgat;
+if avgat>0 then roa6_niavg=ni/avgat;
+if avgat>0 then roa7_itavg=ebit/avgat;
+if avgat>0 then roa8_daavg=ebitda/avgat;
+if seq>0 then roe1_ibendse=ib/seq;
+if be>0 then roe2_ibendbe=ib/be;
+if seq>0 then roe3_niendse=ni/seq;
+if be>0 then roe4_niendbe=ni/be;
+if avgseq>0 then roe5_ibavgse=ib/avgseq;
+if avgbe>0 then roe6_ibavgbe=ib/avgbe;
+if avgseq>0 then roe7_niavgse=ni/avgseq;
+if avgbe>0 then roe8_niavgbe=ni/avgbe;
+
+if (dltt+dlc+seq)>0 then roce1_ibend=ib/(dltt+dlc+seq);
+if (dltt+dlc+seq)>0 then roce3_niend=ni/(dltt+dlc+seq);
+if (dltt+dlc+seq)>0 then roce3_itend=it/(dltt+dlc+seq);
+if (dltt+dlc+seq)>0 then roce4_daend=da/(dltt+dlc+seq);
+if ((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2)>0 then roce5_ibavg=ib/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2);
+if ((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2)>0 then roce6_niavg=ni/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2);
+if ((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2)>0 then roce7_itavg=it/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2);
+if ((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2)>0 then roce8_daavg=da/((dltt+dltt_l1+dlc+dlc_l1+seq+seq_l1)/2);
+
+if roa1_ibend<0 and roa1_ibend^=. then loss1_ib=1;
+if roa2_niend<0 and roa2_niend^=. then loss2_ni=1;
+if roa3_itend<0 and roa3_itend^=. then loss3_it=1;
+if roa4_daend<0 and roa4_daend^=. then loss4_da=1;
+if roa1_ibend>=0 and roa1_ibend^=. then loss1_ib=0;
+if roa2_niend>=0 and roa2_niend^=. then loss2_ni=0;
+if roa3_itend>=0 and roa3_itend^=. then loss3_it=0;
+if roa4_daend>=0 and roa4_daend^=. then loss4_da=0;
+capx_adj=sum(capx,-sppe);
+if sale>0 then capex1=capx/sale;
+if at>0 then capex2=capx/at;
+if avgat>0 then capex3=capx/avgat;
+if ppent>0 then capex4=capx/ppent;
+if avgppe>0 then capex5=capx/avgppe;
+if sale>0 then capex6=capx_adj/sale;
+if at>0 then capex7=capx_adj/at;
+if avgat>0 then capex8=capx_adj/avgat;
+if ppent>0 then capex9=capx_adj/ppent;
+if avgppe>0 then capex10=capx_adj/avgppe;
+if sale>0 then rde1=xrd/sale;
+if at>0 then rde2=xrd/at;
+if avgat>0 then rde3=xrd/avgat;
+if at>0 then ocf1_at=ocfvar/at;
+if me_comp>0 then ocf2_comp=ocfvar/me_comp;
+if me_crsp>0 then ocf3_crsp=ocfvar/me_crsp;
+if avgat>0 then ocf4_avgat=ocfvar/avgat;
+if avgme_comp>0 then ocf5_avgcomp=ocfvar/avgme_comp;
+if avgme_crsp>0 then ocf6_avgcrsp=ocfvar/avgme_crsp;
+if at>0 then sale1_at=sale/at;
+if me_comp>0 then sale2_comp=sale/me_comp;
+if me_crsp>0 then sale3_crps=sale/me_crsp;
+if avgat>0 then sale4_avgat=sale/avgat;
+if avgme_comp>0 then sale5_avgcomp=sale/avgme_comp;
+if avgme_crsp>0 then sale6_avgcrps=sale/avgme_crsp;
+if sale_l1>0 then salesgth=(sale-sale_l1)/sale_l1;
+if at>0 then accr1_end=accrvar0/at;
+if avgat>0 then accr2_avg=accrvar0/avgat;
+if at>0 then accr3_end=accrvar1/at;
+if avgat>0 then accr4_avg=accrvar1/avgat;
+if at>0 then wc=wcvar/at;
+if at>0 then cash=che/at;
+if at>0 then ppe_at=ppent/at;
+if ppent_l1>0 then ppegth=(ppent-ppent_l1)/ppent_l1;
+if at>0 then xad1_at=xad/at;
+if avgat>0 then xad2_avgat=xad/avgat;
+if sale>0 then xad3_sale=xad/sale;
+run;
+@@END VARIABLE: ocfvar@@
+@@END VARIABLE: accrvar0@@
+@@END VARIABLE: accrvar1@@
+@@END VARIABLE: avgme_comp@@
+@@END VARIABLE: avgme_crsp@@
+@@END VARIABLE: avgat@@
+@@END VARIABLE: avgbe@@
+@@END VARIABLE: avgseq@@
+@@END VARIABLE: avgact@@
+@@END VARIABLE: avginvt@@
+@@END VARIABLE: avgrect@@
+@@END VARIABLE: avglct@@
+@@END VARIABLE: avgppent@@
+@@END VARIABLE: avgwcvar@@
+@@END VARIABLE: avgche@@
+@@END VARIABLE: avgppe@@
+@@END VARIABLE: avgsale@@
+@@END VARIABLE: size_lnat@@
+@@END VARIABLE: size_comp@@
+@@END VARIABLE: size_crsp@@
+@@END VARIABLE: bm1@@
+@@END VARIABLE: bm2@@
+@@END VARIABLE: bm3@@
+@@END VARIABLE: bm4@@
+@@END VARIABLE: mb1@@
+@@END VARIABLE: mb2@@
+@@END VARIABLE: mb3@@
+@@END VARIABLE: mb4@@
+@@END VARIABLE: lev1@@
+@@END VARIABLE: lev2@@
+@@END VARIABLE: tbq1_se_comp@@
+@@END VARIABLE: tbq2_be_comp@@
+@@END VARIABLE: tbq3_se_crsp@@
+@@END VARIABLE: tbq4_be_crsp@@
+@@END VARIABLE: roa1_ibend@@
+@@END VARIABLE: roa2_niend@@
+@@END VARIABLE: roa3_itend@@
+@@END VARIABLE: roa4_daend@@
+@@END VARIABLE: roa5_ibavg@@
+@@END VARIABLE: roa6_niavg@@
+@@END VARIABLE: roa7_itavg@@
+@@END VARIABLE: roa8_daavg@@
+@@END VARIABLE: roe1_ibendse@@
+@@END VARIABLE: roe2_ibendbe@@
+@@END VARIABLE: roe3_niendse@@
+@@END VARIABLE: roe4_niendbe@@
+@@END VARIABLE: roe5_ibavgse@@
+@@END VARIABLE: roe6_ibavgbe@@
+@@END VARIABLE: roe7_niavgse@@
+@@END VARIABLE: roe8_niavgbe@@
+@@END VARIABLE: roce1_ibend@@
+@@END VARIABLE: roce3_niend@@
+@@END VARIABLE: roce3_itend@@
+@@END VARIABLE: roce4_daend@@
+@@END VARIABLE: roce5_ibavg@@
+@@END VARIABLE: roce6_niavg@@
+@@END VARIABLE: roce7_itavg@@
+@@END VARIABLE: roce8_daavg@@
+@@END VARIABLE: loss1_ib@@
+@@END VARIABLE: loss2_ni@@
+@@END VARIABLE: loss3_it@@
+@@END VARIABLE: loss4_da@@
+@@END VARIABLE: capx_adj@@
+@@END VARIABLE: capex1@@
+@@END VARIABLE: capex2@@
+@@END VARIABLE: capex3@@
+@@END VARIABLE: capex4@@
+@@END VARIABLE: capex5@@
+@@END VARIABLE: capex6@@
+@@END VARIABLE: capex7@@
+@@END VARIABLE: capex8@@
+@@END VARIABLE: capex9@@
+@@END VARIABLE: capex10@@
+@@END VARIABLE: rde1@@
+@@END VARIABLE: rde2@@
+@@END VARIABLE: rde3@@
+@@END VARIABLE: ocf1_at@@
+@@END VARIABLE: ocf2_comp@@
+@@END VARIABLE: ocf3_crsp@@
+@@END VARIABLE: ocf4_avgat@@
+@@END VARIABLE: ocf5_avgcomp@@
+@@END VARIABLE: ocf6_avgcrsp@@
+@@END VARIABLE: sale1_at@@
+@@END VARIABLE: sale2_comp@@
+@@END VARIABLE: sale3_crps@@
+@@END VARIABLE: sale4_avgat@@
+@@END VARIABLE: sale5_avgcomp@@
+@@END VARIABLE: sale6_avgcrps@@
+@@END VARIABLE: salesgth@@
+@@END VARIABLE: accr1_end@@
+@@END VARIABLE: accr2_avg@@
+@@END VARIABLE: accr3_end@@
+@@END VARIABLE: accr4_avg@@
+@@END VARIABLE: wc@@
+@@END VARIABLE: cash@@
+@@END VARIABLE: ppe_at@@
+@@END VARIABLE: ppegth@@
+@@END VARIABLE: xad1_at@@
+@@END VARIABLE: xad2_avgat@@
+@@END VARIABLE: xad3_sale@@
+data output.yfunvar_base;
+set base;
+run;
+proc means data=base;
+run;

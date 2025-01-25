@@ -1,0 +1,92 @@
+/*
+这段代码主要用于从Compustat数据库中提取投资者相关的数据，并进行初步处理。
+它提取了公司投资者数据，并生成包含公司标识符、财务年度、投资者数量等信息的变量，
+最终将处理后的数据保存至指定库中，用于后续分析。
+*/
+
+/*
+变量综述
+表格一：已知变量
+| 变量名      | 含义                                         | 数据库来源     |
+|-------------|----------------------------------------------|----------------|
+| @@VARIABLE: gvkey@@gvkey         | Compustat公司标识符                         | comp.funda     |
+| @@VARIABLE: datadate@@datadate      | 数据日期                             | comp.funda     |
+| @@VARIABLE: fyear@@fyear          | 财务年度                             | comp.funda     |
+| @@VARIABLE: at@@at              | 总资产                                | comp.funda     |
+| @@VARIABLE: sale@@sale             | 销售额                                | comp.funda     |
+| @@VARIABLE: cshr@@cshr             | 投资者数量                               | comp.funda     |
+
+表格二：计算得到的变量
+| 变量名               | 含义                                         | 公式                                                      |
+|----------------------|----------------------------------------------|-----------------------------------------------------------|
+| @@VARIABLE: investor_end@@investor_end        |  期末投资者数量                           | investor_end = cshr                                        |
+| @@VARIABLE: investor_beg@@investor_beg        |  期初投资者数量                           | investor_beg = investor_end (lagged by one year)           |
+| @@VARIABLE: investor_avg@@investor_avg        |  平均投资者数量                           | investor_avg = (investor_end + investor_beg) / 2           |
+
+/*
+时间范围限制
+| 变量名     | 开始时间   | 结束时间   |
+|------------|------------|------------|
+| datadate   | 01JAN2010  | 31DEC2020  |
+*/
+
+libname output "/home/yale/yiliwu/trial/outputs";
+%let uni_begdt = 01JAN2010;
+%let uni_enddt = 31DEC2020;
+
+@@BEGIN VARIABLE: comp_end@@
+data comp_end;
+ set comp.funda;
+  where "&uni_begdt"d<=datadate<="&uni_enddt"d 
+  and indfmt='INDL' and datafmt='STD' and popsrc='D' and consol='C';
+  if missing(gvkey) then delete;
+  if missing(datadate) then delete;
+  if at<0 then at=.;
+  if sale<0 then sale=.;
+  if missing(cshr) then delete;
+  investor_end=cshr;
+keep gvkey datadate fyear investor_end ;
+run;
+@@END VARIABLE: comp_end@@
+
+@@BEGIN VARIABLE: comp_beg@@
+data comp_beg;
+set comp_end;
+investor_beg=investor_end;
+fyear=fyear-1;
+keep gvkey datadate fyear investor_beg ;
+run;
+@@END VARIABLE: comp_beg@@
+
+proc sort data=comp_end nodupkey;
+by gvkey datadate;
+run;
+
+proc sort data=comp_beg nodupkey;
+by gvkey fyear;
+run;
+
+@@BEGIN VARIABLE: investor@@
+data investor;
+merge comp_end comp_beg;
+by gvkey fyear;
+run;
+@@END VARIABLE: investor@@
+
+@@BEGIN VARIABLE: investor_avg@@
+data investor;
+set investor;
+investor_avg=(investor_end+investor_beg)/2;
+run;
+@@END VARIABLE: investor_avg@@
+
+data output.investor;
+set investor;
+run;
+
+proc means data=investor n p1 p99 p50;
+run;
+
+data output.investor;
+set investor;
+run;

@@ -1,0 +1,11 @@
+
+ data vars.comp;
+ set comp;
+ run;
+ data vars.comp_crsp;
+ set comp_crsp;
+ run;
+ data vars.crsp_m;
+ set crsp_m;
+ run;
+
