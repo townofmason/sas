@@ -8,6 +8,7 @@ body {
     justify-content: center;
     align-items: flex-start; /* 顶部对齐 */
     min-height: 100vh;
+    position: relative; /* 添加相对定位 */
 }
 
 /* 容器样式 */
@@ -131,3 +132,20 @@ h1 {
     text-decoration: underline;
 }
 
+/* 撤回按钮样式 */
+#undoButton {
+    position: absolute; /* 绝对定位 */
+    top: 20px; /* 距离顶部20px */
+    right: 20px; /* 距离右侧20px */
+    padding: 10px 20px;
+    background-color: #87CEFA; /* 淡蓝色 */
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+#undoButton:hover {
+    background-color: #4682B4; /* 深蓝色 */
+}
