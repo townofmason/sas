@@ -5965,7 +5965,31 @@ const databaseToVariables = {
 
 
 
-// 修改后的模糊搜索函数
+
+// 历史记录栈
+const historyStack = [];
+
+// 保存当前状态到历史记录栈
+function saveCurrentState() {
+    const currentState = {
+        searchInput: document.getElementById('searchInput').value,
+        resultHTML: document.getElementById('result').innerHTML
+    };
+    historyStack.push(currentState);
+}
+
+// 撤回操作
+function undo() {
+    if (historyStack.length > 0) {
+        const previousState = historyStack.pop();
+        document.getElementById('searchInput').value = previousState.searchInput;
+        document.getElementById('result').innerHTML = previousState.resultHTML;
+    } else {
+        alert("没有更多可撤回的操作！");
+    }
+}
+
+// 模糊搜索函数保持不变
 function fuzzySearch(query, data, key) {
     query = query.toLowerCase();
     const results = [];
@@ -5973,7 +5997,7 @@ function fuzzySearch(query, data, key) {
         if (Object.hasOwnProperty.call(data, fileName)) {
             const fileData = data[fileName];
             for (const varName in fileData) {
-                 if (Object.hasOwnProperty.call(fileData, varName)) {
+                if (Object.hasOwnProperty.call(fileData, varName)) {
                     const itemData = fileData[varName];
                     if (
                         varName.toLowerCase().includes(query) ||
@@ -5982,14 +6006,15 @@ function fuzzySearch(query, data, key) {
                         results.push({ varName, itemData });
                     }
                 }
-             }
+            }
         }
     }
     return results;
 }
 
-// 修改后的搜索变量函数
+// 搜索变量函数
 function searchVariable() {
+    saveCurrentState(); // 保存当前状态
     const input = document.getElementById('searchInput').value.trim();
     const resultDiv = document.getElementById('result');
 
@@ -5999,106 +6024,108 @@ function searchVariable() {
     }
 
     // 模糊搜索变量名
-     const variableResults = fuzzySearch(input, data, "含义");
-     if (variableResults.length > 0) {
-          const results = variableResults.map(result => {
-             return `
-                  <div class="result-item">
-                      
-                      <p><strong>变量名:</strong> <a href="#" onclick="searchExactVariable('${result.varName}')">${result.varName}</a></p>
-                      <p><strong>含义:</strong> ${result.itemData["含义"]}</p>
-                       ${result.itemData["公式"] ? `<p><strong>公式:</strong> ${result.itemData["公式"]}</p>` : ""}
-                 </div>
-              `;
-          }).join("");
-         resultDiv.innerHTML = results;
-      } else {
-         resultDiv.innerHTML = `<p>未找到相关变量。</p>`;
-     }
+    const variableResults = fuzzySearch(input, data, "含义");
+    if (variableResults.length > 0) {
+        const results = variableResults.map(result => {
+            return `
+                <div class="result-item">
+                    <p><strong>变量名:</strong> <a href="#" onclick="searchExactVariable('${result.varName}')">${result.varName}</a></p>
+                    <p><strong>含义:</strong> ${result.itemData["含义"]}</p>
+                    ${result.itemData["公式"] ? `<p><strong>公式:</strong> ${result.itemData["公式"]}</p>` : ""}
+                </div>
+            `;
+        }).join("");
+        resultDiv.innerHTML = results;
+    } else {
+        resultDiv.innerHTML = `<p>未找到相关变量。</p>`;
+    }
 }
-// 修改后的精确搜索变量函数
+
+// 搜索数据库函数
+function searchDatabase() {
+    saveCurrentState(); // 保存当前状态
+    const input = document.getElementById('searchInput').value.trim();
+    const resultDiv = document.getElementById('result');
+
+    if (!input) {
+        resultDiv.innerHTML = `<p>请输入查询内容。</p>`;
+        return;
+    }
+
+    const databaseResults = Object.keys(databaseToVariables).filter(db =>
+        db.toLowerCase().includes(input.toLowerCase())
+    );
+    if (databaseResults.length > 0) {
+        const results = databaseResults.map(db => {
+            const variables = databaseToVariables[db] || [];
+            return `
+                <div class="result-item">
+                    <p><strong>数据库:</strong> <a href="#" onclick="searchExactDatabase('${db}')">${db}</a></p>
+                    <p><strong>关联变量:</strong> ${variables.join(", ")}</p>
+                </div>
+            `;
+        }).join("");
+        resultDiv.innerHTML = results;
+    } else {
+        resultDiv.innerHTML = `<p>未找到相关数据库。</p>`;
+    }
+}
+
+// 精确搜索变量函数
 function searchExactVariable(varName) {
+    saveCurrentState(); // 保存当前状态
     const resultDiv = document.getElementById('result');
     let item;
     let selectedFile;
     for (const file in data) {
         if (Object.hasOwnProperty.call(data, file)) {
-              if (data[file][varName]) {
+            if (data[file][varName]) {
                 item = data[file][varName];
                 selectedFile = file;
                 break;
             }
         }
     }
-     if (item) {
+    if (item) {
         const databases = item["数据库来源"] ? item["数据库来源"].map(db => `<a href="#" onclick="searchExactDatabase('${db}')">${db}</a>`).join(", ") : "";
-         const usedVariables = item["用到的变量"] ? `
+        const usedVariables = item["用到的变量"] ? `
             <p><strong>用到的变量:</strong> 
-                ${item["用到的变量"].map(v => `<a href="#" onclick="searchExactVariable('${v}','${selectedFile}')" class="variable-link">${v}</a>`).join(", ")}
+                ${item["用到的变量"].map(v => `<a href="#" onclick="searchExactVariable('${v}')">${v}</a>`).join(", ")}
             </p>
         ` : "";
-          const exampleFile = item["示例文件"];
+        const exampleFile = item["示例文件"];
         const literatureFiles = exampleToLiteratureMap[exampleFile] || [];
         let literatureLinks = "";
-         if (literatureFiles && literatureFiles.length > 0) {
+        if (literatureFiles && literatureFiles.length > 0) {
             literatureLinks = `
                 <p><strong>相关文献:</strong></p>
                 <ul>
                     ${literatureFiles.map(file => `<li><a href="${file}" download>${file}</a></li>`).join("")}
                 </ul>
             `;
-         }
+        }
         resultDiv.innerHTML = `
             <div class="result-item">
-               
-               <p><strong>变量名:</strong> <a href="#" onclick="loadExampleFile('${selectedFile}')#${varName}">${varName}</a></p>
-               <p><strong>含义:</strong> ${item["含义"]}</p>
-               ${item["公式"] ? `<p><strong>公式:</strong> ${item["公式"]}</p>` : ""}
+                <p><strong>变量名:</strong> <a href="#" onclick="loadExampleFile('${selectedFile}')#${varName}">${varName}</a></p>
+                <p><strong>含义:</strong> ${item["含义"]}</p>
+                ${item["公式"] ? `<p><strong>公式:</strong> ${item["公式"]}</p>` : ""}
                 ${usedVariables}
-               ${databases ? `<p><strong>数据库来源:</strong> ${databases}</p>` : ""}
-               <p><strong>示例文件:</strong> <a href="#" onclick="loadExampleFile('${selectedFile}')">${selectedFile}</a></p>
+                ${databases ? `<p><strong>数据库来源:</strong> ${databases}</p>` : ""}
+                <p><strong>示例文件:</strong> <a href="#" onclick="loadExampleFile('${selectedFile}')">${selectedFile}</a></p>
                 ${literatureLinks}
-           </div>
-       `;
+            </div>
+        `;
     } else {
-       resultDiv.innerHTML = `<p>未找到该变量名。</p>`;
+        resultDiv.innerHTML = `<p>未找到该变量名。</p>`;
     }
 }
 
-
-// 修改后的搜索数据库函数
-function searchDatabase() {
-   const input = document.getElementById('searchInput').value.trim();
-    const resultDiv = document.getElementById('result');
-    
-    if (!input) {
-        resultDiv.innerHTML = `<p>请输入查询内容。</p>`;
-        return;
-    }
-     const databaseResults = Object.keys(databaseToVariables).filter(db =>
-        db.toLowerCase().includes(input.toLowerCase())
-    );
-   if(databaseResults.length > 0) {
-       const results = databaseResults.map(db =>{
-           const variables = databaseToVariables[db] || [];
-             return `
-                 <div class="result-item">
-                       <p><strong>数据库:</strong> <a href="#" onclick="searchExactDatabase('${db}')">${db}</a></p>
-                       <p><strong>关联变量:</strong> ${variables.join(", ")}</p>
-                   </div>
-              `;
-       }).join("")
-       resultDiv.innerHTML = results;
-   }else{
-        resultDiv.innerHTML = `<p>未找到相关数据库。</p>`;
-   }
-
-}
-// 修改后的精确搜索数据库函数
+// 精确搜索数据库函数
 function searchExactDatabase(db) {
-   const resultDiv = document.getElementById('result');
+    saveCurrentState(); // 保存当前状态
+    const resultDiv = document.getElementById('result');
     const variables = databaseToVariables[db] || [];
-    if(variables.length>0) {
+    if (variables.length > 0) {
         const variableLinks = variables.map(varName => `<a href="#" onclick="searchExactVariable('${varName}')">${varName}</a>`).join(", ");
         resultDiv.innerHTML = `
             <div class="result-item">
@@ -6106,13 +6133,14 @@ function searchExactDatabase(db) {
                 <p><strong>关联变量:</strong> ${variableLinks}</p>
             </div>
         `;
-    }else {
-         resultDiv.innerHTML = `<p>未找到该数据库。</p>`;
-     }
+    } else {
+        resultDiv.innerHTML = `<p>未找到该数据库。</p>`;
+    }
 }
 
 // 修改后的加载示例文件函数
 function loadExampleFile(filePath) {
+    saveCurrentState();
     if (!filePath.endsWith('.txt')) {
         filePath += '.txt';
     }
@@ -6171,6 +6199,7 @@ function loadExampleFile(filePath) {
             document.getElementById('result').innerHTML = `<p>文件加载失败，请检查文件路径。</p>`;
         });
 }
+
 // 为文件内容中的变量名添加超链接
 // 为文件内容中的变量名添加超链接
 function addVariableLinksWithAnchors(content) {
